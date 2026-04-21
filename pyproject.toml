@@ -1,0 +1,40 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "N", "S"]
+ignore = [
+    "S101",   # allow assert in tests
+    "S105",   # allow hardcoded passwords in tests
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "N"]
+"app/api/routes/*" = ["B008"]   # FastAPI Depends() in defaults is intentional
+"app/auth/providers.py" = ["S106"]  # token_url is a URL, not a password
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+warn_return_any = true
+warn_unused_ignores = true
+exclude = ["tests/"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--cov=app --cov-report=term-missing --cov-fail-under=80 -v"
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["tests/*"]

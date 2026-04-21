@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    env:
+      # Dummy values so pydantic-settings can instantiate Settings in tests
+      ANTHROPIC_API_KEY: sk-ant-test
+      LANGSMITH_API_KEY: ls-test
+      SUPABASE_URL: https://test.supabase.co
+      SUPABASE_ANON_KEY: test-anon-key
+      SUPABASE_SERVICE_ROLE_KEY: test-service-key
+      BLOG_COPILOT_KEK: ${{ secrets.BLOG_COPILOT_KEK_TEST }}
+      GITHUB_CLIENT_ID: test-github-id
+      GITHUB_CLIENT_SECRET: test-github-secret
+      GITHUB_OAUTH_REDIRECT_URI: http://localhost:8000/auth/github/callback
+      NOTION_CLIENT_ID: test-notion-id
+      NOTION_CLIENT_SECRET: test-notion-secret
+      NOTION_OAUTH_REDIRECT_URI: http://localhost:8000/auth/notion/callback
+      APP_SECRET_KEY: test-secret-key-32-chars-minimum-x
+      APP_BASE_URL: http://localhost:8000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Black format check
+        run: black --check .
+
+      - name: isort check
+        run: isort --check-only .
+
+      - name: mypy type check
+        run: mypy app/
+
+      - name: pytest with coverage
+        run: pytest tests/ -v --cov=app --cov-report=term-missing

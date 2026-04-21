@@ -1,0 +1,3 @@
+[submodule "mcp-servers/amplifyr"]
+	path = mcp-servers/amplifyr
+	url = ./mcp-servers/amplifyr
