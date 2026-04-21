@@ -13,7 +13,6 @@ Usage:
     streamlit run frontend/app.py
 """
 
-import json
 import logging
 import uuid
 from typing import Generator
@@ -72,6 +71,7 @@ def _stream_chat(
         payload["github_token"] = github_token
 
     event_type = "message"
+    data_buffer: list[str] = []
     try:
         with requests.post(
             f"{API_BASE_URL}/chat",
@@ -82,13 +82,19 @@ def _stream_chat(
             resp.raise_for_status()
             for raw_line in resp.iter_lines(decode_unicode=True):
                 if not raw_line:
-                    continue
-                if raw_line.startswith("event:"):
+                    # Empty line = SSE event separator. Flush buffered data lines.
+                    if data_buffer:
+                        yield event_type, "\n".join(data_buffer)
+                        data_buffer = []
+                        event_type = "message"
+                elif raw_line.startswith("event:"):
                     event_type = raw_line[6:].strip()
                 elif raw_line.startswith("data:"):
-                    data = raw_line[5:].strip()
-                    yield event_type, data
-                    event_type = "message"  # reset after each data line
+                    # Accumulate lines; SSE spec joins multiple data: lines with \n
+                    data_buffer.append(raw_line[5:].lstrip(" "))
+            # Flush any trailing data that arrived without a final empty line
+            if data_buffer:
+                yield event_type, "\n".join(data_buffer)
     except requests.exceptions.ConnectionError:
         yield "error", "Cannot connect to the backend. Is `uvicorn app.api.main:app` running?"
     except requests.exceptions.HTTPError as exc:
