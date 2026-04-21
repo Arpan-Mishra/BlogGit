@@ -124,15 +124,25 @@ def _make_repo_llm(settings: Settings):
             "Respond ONLY with a JSON object with these keys: "
             "language (str), modules (list of str), purpose (str), "
             "notable_commits (list of str), readme_excerpt (str). "
+            "Do not wrap the JSON in markdown code fences. "
             "Do not include any other text."
         )
         messages = [LCHumanMessage(content=f"{system}\n\n{prompt}")]
         response = await chat.ainvoke(messages)
-        data = json.loads(response.content)
+        raw = response.content.strip()
+        # Strip markdown code fences if the model wraps the JSON anyway
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1]  # drop opening fence line
+            raw = raw.rsplit("```", 1)[0].strip()
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("repo_llm returned non-JSON; using fallback RepoSummary. raw=%r", raw[:200])
+            data = {}
         return RepoSummary(
             language=data.get("language", "unknown"),
             modules=tuple(data.get("modules", [])),
-            purpose=data.get("purpose", ""),
+            purpose=data.get("purpose", "Repository purpose could not be determined from available data."),
             notable_commits=tuple(data.get("notable_commits", [])),
             readme_excerpt=data.get("readme_excerpt", ""),
         )
@@ -172,7 +182,13 @@ async def chat(
     graph = _build_graph_for_request(request, settings)
 
     async def _event_generator() -> AsyncGenerator[dict, None]:
-        result = await graph.ainvoke(state)
+        try:
+            result = await graph.ainvoke(state)
+        except Exception as exc:
+            logger.exception("graph.ainvoke failed: %s", exc)
+            yield {"event": "error", "data": str(exc)}
+            return
+
         _sessions[request.session_id] = result
 
         new_messages = result.get("messages", [])[prev_message_count:]

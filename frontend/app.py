@@ -21,6 +21,15 @@ from typing import Generator
 import requests
 import streamlit as st
 
+import sys
+from pathlib import Path
+
+# Ensure the project root is on sys.path so both `streamlit run frontend/app.py`
+# (cwd = project root) and direct script execution work correctly.
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 from frontend.components.connections import render_connections
 
 logger = logging.getLogger(__name__)
