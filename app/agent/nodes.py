@@ -297,6 +297,7 @@ def make_drafting_node(llm: Any, search_tool: Any | None = None) -> Any:
 
         intake_answers: dict[str, str] = state.get("intake_answers", {})
         revision_history: list = list(state.get("revision_history", []))
+        messages: list = list(state.get("messages", []))
 
         system_prompt = (_PROMPTS_DIR / "drafting.md").read_text()
 
@@ -322,6 +323,7 @@ def make_drafting_node(llm: Any, search_tool: Any | None = None) -> Any:
         return {
             "current_draft": draft_text,
             "revision_history": revision_history + [draft_version],
+            "messages": messages + [AIMessage(content=draft_text)],
             "phase": "revise",
         }
 
@@ -400,3 +402,82 @@ def _build_drafting_prompt(
 {answers_block or "(no intake answers provided)"}
 
 Now write the blog post following the drafting guidelines above."""
+
+
+# ---------------------------------------------------------------------------
+# revision node factory
+# ---------------------------------------------------------------------------
+
+
+def make_revision_node(llm: Any) -> Any:
+    """Return an async LangGraph node function for blog post revision.
+
+    Parameters
+    ----------
+    llm:
+        An LLM instance with an async .ainvoke method. In production this
+        is a Claude model; in tests it is a mock.
+
+    Returns
+    -------
+    An async function ``node(state: BlogState) -> dict`` suitable for use as
+    a LangGraph StateGraph node.
+    """
+
+    async def revision_node(state: BlogState) -> dict:
+        current_draft = state.get("current_draft")
+        if not current_draft:
+            raise ValueError("current_draft is required in state to run revision node")
+
+        messages: list = list(state.get("messages", []))
+        revision_history: list = list(state.get("revision_history", []))
+
+        # The last HumanMessage is the user's revision feedback.
+        human_messages = [m for m in messages if isinstance(m, HumanMessage)]
+        user_feedback = human_messages[-1].content if human_messages else ""
+
+        system_prompt = (_PROMPTS_DIR / "revision.md").read_text()
+        prompt = _build_revision_prompt(
+            system_prompt=system_prompt,
+            current_draft=current_draft,
+            user_feedback=user_feedback,
+        )
+
+        logger.info("Revision requested: feedback=%r", user_feedback[:80])
+
+        response = await llm.ainvoke(prompt)
+        new_draft = response.content if hasattr(response, "content") else str(response)
+
+        version = len(revision_history) + 1
+        draft_version = DraftVersion(version=version, content=new_draft, user_feedback=user_feedback)
+
+        logger.info("Revision v%d produced (%d chars)", version, len(new_draft))
+
+        return {
+            "current_draft": new_draft,
+            "revision_history": revision_history + [draft_version],
+            "messages": messages + [AIMessage(content=new_draft)],
+            "phase": "revise",
+        }
+
+    return revision_node
+
+
+def _build_revision_prompt(
+    *,
+    system_prompt: str,
+    current_draft: str,
+    user_feedback: str,
+) -> str:
+    """Construct the prompt sent to the LLM for blog post revision."""
+    return f"""{system_prompt}
+
+## Current Draft
+
+{current_draft}
+
+## Author Feedback
+
+{user_feedback}
+
+Now produce the revised blog post."""

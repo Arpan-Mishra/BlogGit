@@ -627,3 +627,142 @@ class TestMakeDraftingNodeWithSearch:
 
         assert "current_draft" in result
         assert result["phase"] == "revise"
+
+
+# ---------------------------------------------------------------------------
+# make_revision_node
+# ---------------------------------------------------------------------------
+
+
+class TestMakeRevisionNode:
+    """Tests for make_revision_node — the blog post revision loop."""
+
+    def _make_revision_state(
+        self, current_draft: str = "# Original Draft\n\nSome content.", user_feedback: str = "Make it shorter."
+    ) -> dict:
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        return {
+            "user_id": "u1",
+            "session_id": "s1",
+            "phase": "revise",
+            "messages": [
+                AIMessage(content=current_draft),
+                HumanMessage(content=user_feedback),
+            ],
+            "repo_url": "https://github.com/owner/repo",
+            "repo_summary": None,
+            "intake_answers": {},
+            "current_draft": current_draft,
+            "revision_history": [],
+            "notion_page_id": None,
+            "notion_title": None,
+            "medium_markdown": None,
+            "medium_url": None,
+            "linkedin_post": None,
+            "linkedin_post_url": None,
+            "outreach_dm": None,
+        }
+
+    def _make_mock_llm(self, draft_content: str = "# Revised Draft\n\nShorter content.") -> MagicMock:
+        from langchain_core.messages import AIMessage
+
+        llm = MagicMock()
+        llm.ainvoke = AsyncMock(return_value=AIMessage(content=draft_content))
+        return llm
+
+    @pytest.mark.asyncio
+    async def test_raises_without_current_draft(self) -> None:
+        from app.agent.nodes import make_revision_node
+
+        node = make_revision_node(llm=self._make_mock_llm())
+        state = self._make_revision_state()
+        state["current_draft"] = None
+
+        with pytest.raises(ValueError, match="current_draft"):
+            await node(state)
+
+    @pytest.mark.asyncio
+    async def test_returns_revised_draft(self) -> None:
+        from app.agent.nodes import make_revision_node
+
+        node = make_revision_node(llm=self._make_mock_llm("# Revised."))
+        state = self._make_revision_state()
+
+        result = await node(state)
+
+        assert result["current_draft"] == "# Revised."
+
+    @pytest.mark.asyncio
+    async def test_phase_stays_revise(self) -> None:
+        from app.agent.nodes import make_revision_node
+
+        node = make_revision_node(llm=self._make_mock_llm())
+        result = await node(self._make_revision_state())
+
+        assert result["phase"] == "revise"
+
+    @pytest.mark.asyncio
+    async def test_revision_history_increments(self) -> None:
+        from app.agent.nodes import make_revision_node
+        from app.agent.state import DraftVersion
+
+        node = make_revision_node(llm=self._make_mock_llm("Rev 1."))
+        state = self._make_revision_state()
+        state["revision_history"] = [DraftVersion(version=1, content="# Original Draft\n\nSome content.")]
+
+        result = await node(state)
+
+        history = result["revision_history"]
+        assert len(history) == 2
+        assert history[1].version == 2
+        assert history[1].content == "Rev 1."
+
+    @pytest.mark.asyncio
+    async def test_user_feedback_stored_in_draft_version(self) -> None:
+        from app.agent.nodes import make_revision_node
+        from app.agent.state import DraftVersion
+
+        node = make_revision_node(llm=self._make_mock_llm())
+        state = self._make_revision_state(user_feedback="Add more code examples.")
+
+        result = await node(state)
+
+        latest: DraftVersion = result["revision_history"][-1]
+        assert latest.user_feedback == "Add more code examples."
+
+    @pytest.mark.asyncio
+    async def test_revised_draft_appended_to_messages(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from app.agent.nodes import make_revision_node
+
+        node = make_revision_node(llm=self._make_mock_llm("Revised content."))
+        state = self._make_revision_state()
+        initial_count = len(state["messages"])
+
+        result = await node(state)
+
+        new_messages = result["messages"][initial_count:]
+        assert len(new_messages) == 1
+        assert isinstance(new_messages[0], AIMessage)
+        assert new_messages[0].content == "Revised content."
+
+    @pytest.mark.asyncio
+    async def test_llm_called_with_prompt_containing_draft_and_feedback(self) -> None:
+        from app.agent.nodes import make_revision_node
+
+        llm = self._make_mock_llm()
+        node = make_revision_node(llm=llm)
+        state = self._make_revision_state(
+            current_draft="# Original Draft\n\nSome content.",
+            user_feedback="Make it shorter.",
+        )
+
+        await node(state)
+
+        llm.ainvoke.assert_called_once()
+        prompt_arg = llm.ainvoke.call_args[0][0]
+        assert isinstance(prompt_arg, str)
+        assert "# Original Draft" in prompt_arg
+        assert "Make it shorter." in prompt_arg

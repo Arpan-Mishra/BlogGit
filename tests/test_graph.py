@@ -67,12 +67,10 @@ class TestRoutePhase:
 
         assert route_phase(_make_state("done")) == END
 
-    def test_revise_phase_routes_to_end(self) -> None:
-        from langgraph.graph import END
-
+    def test_revise_phase_routes_to_revision(self) -> None:
         from app.agent.graph import route_phase
 
-        assert route_phase(_make_state("revise")) == END
+        assert route_phase(_make_state("revise")) == "revision"
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +146,7 @@ class TestBuildGraph:
         assert "repo_analyzer" in node_names
         assert "intake" in node_names
         assert "drafting" in node_names
+        assert "revision" in node_names
 
     @pytest.mark.asyncio
     async def test_graph_invoke_repo_phase_returns_intake_phase(self) -> None:

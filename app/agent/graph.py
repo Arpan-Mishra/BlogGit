@@ -11,7 +11,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from app.agent.nodes import make_drafting_node, make_intake_node, make_repo_analyzer_node
+from app.agent.nodes import make_drafting_node, make_intake_node, make_repo_analyzer_node, make_revision_node
 from app.agent.state import BlogState
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,8 @@ def route_phase(state: BlogState) -> str:
         return "intake"
     if phase == "draft":
         return "drafting"
+    if phase == "revise":
+        return "revision"
     logger.debug("route_phase: phase=%r → END", phase)
     return END
 
@@ -87,6 +89,7 @@ def build_graph(
     graph.add_node("repo_analyzer", make_repo_analyzer_node(tools=tools, llm=repo_llm))
     graph.add_node("intake", make_intake_node())
     graph.add_node("drafting", make_drafting_node(llm=drafting_llm, search_tool=search_tool))
+    graph.add_node("revision", make_revision_node(llm=drafting_llm))
 
     graph.add_conditional_edges(
         START,
@@ -95,6 +98,7 @@ def build_graph(
             "repo_analyzer": "repo_analyzer",
             "intake": "intake",
             "drafting": "drafting",
+            "revision": "revision",
             END: END,
         },
     )
@@ -108,5 +112,6 @@ def build_graph(
         },
     )
     graph.add_edge("drafting", END)
+    graph.add_edge("revision", END)
 
     return graph.compile(checkpointer=checkpointer)
