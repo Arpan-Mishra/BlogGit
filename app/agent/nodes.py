@@ -242,12 +242,12 @@ def make_intake_node() -> Any:
         next_index = last_asked_index + 1
 
         if next_index >= len(INTAKE_QUESTIONS):
-            # All questions answered — transition to drafting
-            logger.info("All intake questions answered; transitioning to draft phase")
+            # All questions answered — transition to outline planning
+            logger.info("All intake questions answered; transitioning to outline phase")
             return {
                 "intake_answers": intake_answers,
                 "messages": messages,
-                "phase": "draft",
+                "phase": "outline",
             }
 
         _, next_q_text = INTAKE_QUESTIONS[next_index]
@@ -261,6 +261,174 @@ def make_intake_node() -> Any:
         }
 
     return intake_node
+
+
+# ---------------------------------------------------------------------------
+# Outline node factory
+# ---------------------------------------------------------------------------
+
+# Keywords that signal the user has approved the outline.
+_APPROVAL_PATTERNS: list[str] = [
+    r"\byes\b",
+    r"\byep\b",
+    r"\byeah\b",
+    r"\bsure\b",
+    r"\bok\b",
+    r"\bokay\b",
+    r"\blooks good\b",
+    r"\blooks great\b",
+    r"\bgreat\b",
+    r"\bgo ahead\b",
+    r"\bapproved?\b",
+    r"\bstart\b",
+    r"\bbegin\b",
+    r"\bwrite it\b",
+    r"\bproceed\b",
+    r"\bgo for it\b",
+    r"\bthis is good\b",
+    r"\bthis looks good\b",
+    r"\bfine\b",
+    r"\bperfect\b",
+    r"\bsounds? good\b",
+    r"\blgtm\b",
+]
+
+
+def _is_approval(text: str) -> bool:
+    """Return True if the text is a short approval of the proposed outline."""
+    lower = text.lower().strip()
+    # Short messages that are purely affirmative — not multi-sentence feedback.
+    if len(lower) > 120:
+        return False
+    return any(re.search(p, lower) for p in _APPROVAL_PATTERNS)
+
+
+def make_outline_node(llm: Any) -> Any:
+    """Return an async LangGraph node function for outline planning.
+
+    Behaviour
+    ---------
+    - First invocation (no outline_plan in state): generates a proposed section
+      outline from the repo summary and intake answers, stores it in state, and
+      returns to END so the user can review it.
+    - Subsequent invocations: inspects the last HumanMessage.
+      - Approval detected  → transitions phase to "draft" (graph continues to
+        the drafting node via route_after_outline).
+      - Feedback detected  → revises the outline, stores the update, returns to
+        END so the user can review the revised outline.
+    """
+
+    async def outline_node(state: BlogState) -> dict:
+        messages: list = list(state.get("messages", []))
+        outline_plan: str | None = state.get("outline_plan")
+        repo_summary = state.get("repo_summary")
+        intake_answers: dict[str, str] = state.get("intake_answers", {})
+
+        human_messages = [m for m in messages if isinstance(m, HumanMessage)]
+
+        if outline_plan is not None:
+            # We already have an outline — check if the user approved or gave feedback.
+            user_response = human_messages[-1].content if human_messages else ""
+
+            if _is_approval(user_response):
+                logger.info("Outline approved; transitioning to draft phase")
+                return {"phase": "draft"}
+
+            # User gave feedback — revise the outline.
+            logger.info("Outline feedback received; revising outline")
+            system_prompt = (_PROMPTS_DIR / "outline.md").read_text()
+            revision_prompt = _build_outline_revision_prompt(
+                system_prompt=system_prompt,
+                current_outline=outline_plan,
+                user_feedback=user_response,
+            )
+            response = await llm.ainvoke(revision_prompt)
+            revised_outline = response.content if hasattr(response, "content") else str(response)
+
+            logger.info("Revised outline produced (%d chars)", len(revised_outline))
+            return {
+                "outline_plan": revised_outline,
+                "messages": messages + [AIMessage(content=revised_outline)],
+                "phase": "outline",
+            }
+
+        # First time in outline phase — generate the outline.
+        logger.info("Generating outline for repo: %s", state.get("repo_url", "unknown"))
+        system_prompt = (_PROMPTS_DIR / "outline.md").read_text()
+        generation_prompt = _build_outline_prompt(
+            system_prompt=system_prompt,
+            repo_summary=repo_summary,
+            intake_answers=intake_answers,
+        )
+        response = await llm.ainvoke(generation_prompt)
+        outline = response.content if hasattr(response, "content") else str(response)
+
+        logger.info("Outline produced (%d chars)", len(outline))
+        return {
+            "outline_plan": outline,
+            "messages": messages + [AIMessage(content=outline)],
+            "phase": "outline",
+        }
+
+    return outline_node
+
+
+def _build_outline_prompt(
+    *,
+    system_prompt: str,
+    repo_summary: Any,
+    intake_answers: dict[str, str],
+) -> str:
+    """Construct the prompt for generating an initial blog post outline."""
+    answers_block = "\n".join(
+        f"- **{key.replace('_', ' ').title()}:** {value}"
+        for key, value in intake_answers.items()
+    )
+    modules = ", ".join(repo_summary.modules) if repo_summary and repo_summary.modules else "(unknown)"
+    purpose = repo_summary.purpose if repo_summary else "(unknown)"
+    language = repo_summary.language if repo_summary else "(unknown)"
+    commits = "\n".join(f"  - {c}" for c in repo_summary.notable_commits) if repo_summary else ""
+    readme = repo_summary.readme_excerpt if repo_summary else ""
+
+    return f"""{system_prompt}
+
+## Repository Summary
+
+- **Language:** {language}
+- **Purpose:** {purpose}
+- **Key Modules:** {modules}
+- **Notable Commits:**
+{commits or "  (none available)"}
+
+## README Excerpt
+
+{readme or "(none)"}
+
+## Intake Answers
+
+{answers_block or "(no intake answers provided)"}
+
+Now propose the blog post outline."""
+
+
+def _build_outline_revision_prompt(
+    *,
+    system_prompt: str,
+    current_outline: str,
+    user_feedback: str,
+) -> str:
+    """Construct the prompt for revising an existing outline based on feedback."""
+    return f"""{system_prompt}
+
+## Current Outline
+
+{current_outline}
+
+## Author Feedback
+
+{user_feedback}
+
+Revise the outline according to the feedback and re-present it in the same format."""
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +464,7 @@ def make_drafting_node(llm: Any, search_tool: Any | None = None) -> Any:
             raise ValueError("repo_summary is required in state to run drafting node")
 
         intake_answers: dict[str, str] = state.get("intake_answers", {})
+        outline_plan: str | None = state.get("outline_plan")
         revision_history: list = list(state.get("revision_history", []))
         messages: list = list(state.get("messages", []))
 
@@ -305,6 +474,7 @@ def make_drafting_node(llm: Any, search_tool: Any | None = None) -> Any:
             system_prompt=system_prompt,
             repo_summary=repo_summary,
             intake_answers=intake_answers,
+            outline_plan=outline_plan,
         )
 
         logger.info("Drafting blog post for repo: %s", state.get("repo_url", "unknown"))
@@ -376,11 +546,18 @@ def _build_drafting_prompt(
     system_prompt: str,
     repo_summary: RepoSummary,
     intake_answers: dict[str, str],
+    outline_plan: str | None = None,
 ) -> str:
     """Construct the prompt sent to the LLM for blog post drafting."""
     answers_block = "\n".join(
         f"- **{key.replace('_', ' ').title()}:** {value}"
         for key, value in intake_answers.items()
+    )
+
+    outline_section = (
+        f"\n## Approved Outline\n\nFollow this section structure exactly:\n\n{outline_plan}\n"
+        if outline_plan
+        else ""
     )
 
     return f"""{system_prompt}
@@ -400,7 +577,7 @@ def _build_drafting_prompt(
 ## Intake Answers
 
 {answers_block or "(no intake answers provided)"}
-
+{outline_section}
 Now write the blog post following the drafting guidelines above."""
 
 

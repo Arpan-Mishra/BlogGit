@@ -24,5 +24,15 @@ Handle the author's feedback according to its scope:
 - Keep code examples accurate and relevant to the repository being described
 - Maintain the author's voice and the agreed-upon tone from the intake answers
 - Never add placeholder text such as "[Add example here]" or "[insert link]"
-- Produce publication-ready markdown — no preamble, no meta-commentary
-- Return ONLY the revised blog post
+- Return ONLY the revised blog post — no preamble, no meta-commentary, no editor's notes
+
+## Output Format (CRITICAL)
+
+Output ONLY well-formed Markdown:
+
+- Every `##` section heading must be on its own line, preceded by a blank line and followed by a blank line
+- Every paragraph must be separated from the next by a blank line
+- Inline formatting: `**bold**`, `*italics*`, `` `code` `` for identifiers
+- Code blocks: triple backticks with a language identifier
+- Bullet lists: each item on its own line, blank line before and after the list
+- Output starts directly with the first heading or paragraph — nothing before it

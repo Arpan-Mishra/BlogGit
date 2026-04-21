@@ -60,6 +60,7 @@ def _make_initial_state(request: ChatRequest) -> BlogState:
         repo_url=request.repo_url,
         repo_summary=None,
         intake_answers={},
+        outline_plan=None,
         current_draft=None,
         revision_history=[],
         notion_page_id=None,

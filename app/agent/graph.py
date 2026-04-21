@@ -11,7 +11,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from app.agent.nodes import make_drafting_node, make_intake_node, make_repo_analyzer_node, make_revision_node
+from app.agent.nodes import make_drafting_node, make_intake_node, make_outline_node, make_repo_analyzer_node, make_revision_node
 from app.agent.state import BlogState
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,8 @@ def route_phase(state: BlogState) -> str:
         return "repo_analyzer"
     if phase == "intake":
         return "intake"
+    if phase == "outline":
+        return "outline"
     if phase == "draft":
         return "drafting"
     if phase == "revise":
@@ -41,9 +43,19 @@ def route_phase(state: BlogState) -> str:
 
 
 def route_after_intake(state: BlogState) -> str:
-    """Route from the intake node to drafting (if all answers collected) or END.
+    """Route from the intake node to outline planning (if all answers collected) or END.
 
     Called by the conditional edge after the intake node runs.
+    """
+    if state.get("phase") == "outline":
+        return "outline"
+    return END
+
+
+def route_after_outline(state: BlogState) -> str:
+    """Route from the outline node to drafting (if approved) or END (await feedback).
+
+    Called by the conditional edge after the outline node runs.
     """
     if state.get("phase") == "draft":
         return "drafting"
@@ -71,7 +83,7 @@ def build_graph(
     repo_llm:
         LLM used by the repo_analyzer node for structured extraction.
     drafting_llm:
-        LLM used by the drafting node for blog post generation.
+        LLM used by the outline, drafting, and revision nodes.
     search_tool:
         Optional web search tool (e.g. TavilySearchResults). When provided,
         the drafting node may call it to look up articles on topics from the
@@ -88,6 +100,7 @@ def build_graph(
 
     graph.add_node("repo_analyzer", make_repo_analyzer_node(tools=tools, llm=repo_llm))
     graph.add_node("intake", make_intake_node())
+    graph.add_node("outline", make_outline_node(llm=drafting_llm))
     graph.add_node("drafting", make_drafting_node(llm=drafting_llm, search_tool=search_tool))
     graph.add_node("revision", make_revision_node(llm=drafting_llm))
 
@@ -97,6 +110,7 @@ def build_graph(
         {
             "repo_analyzer": "repo_analyzer",
             "intake": "intake",
+            "outline": "outline",
             "drafting": "drafting",
             "revision": "revision",
             END: END,
@@ -106,6 +120,14 @@ def build_graph(
     graph.add_conditional_edges(
         "intake",
         route_after_intake,
+        {
+            "outline": "outline",
+            END: END,
+        },
+    )
+    graph.add_conditional_edges(
+        "outline",
+        route_after_outline,
         {
             "drafting": "drafting",
             END: END,

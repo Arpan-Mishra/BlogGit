@@ -157,6 +157,7 @@ def _render_sidebar() -> None:
     phase_labels = {
         "repo": "Analysing repository",
         "intake": "Gathering requirements",
+        "outline": "Planning sections",
         "draft": "Drafting post",
         "revise": "Revising",
         "done": "Complete",
@@ -264,6 +265,7 @@ def main() -> None:
         placeholder_text = {
             "repo": "Say anything to start the analysis...",
             "intake": "Answer the question above...",
+            "outline": "Approve the outline or suggest changes...",
             "draft": "Say anything to start drafting...",
             "revise": "Give feedback on the draft (e.g. 'make the intro shorter')...",
         }.get(st.session_state["phase"], "Type a message...")
