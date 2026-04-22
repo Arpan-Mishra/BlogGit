@@ -1,0 +1,30 @@
+# Railway deployment configuration
+# Two services: api (FastAPI) and frontend (Streamlit)
+#
+# Required env vars (set in Railway dashboard → Variables):
+#   ANTHROPIC_API_KEY, LANGSMITH_API_KEY, SUPABASE_URL, SUPABASE_ANON_KEY,
+#   SUPABASE_SERVICE_ROLE_KEY, BLOG_COPILOT_KEK, APP_SECRET_KEY,
+#   GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, GITHUB_OAUTH_REDIRECT_URI,
+#   NOTION_CLIENT_ID, NOTION_CLIENT_SECRET, NOTION_OAUTH_REDIRECT_URI,
+#   LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET, LINKEDIN_OAUTH_REDIRECT_URI,
+#   API_BASE_URL (set to the Railway-assigned domain for the api service),
+#   APP_BASE_URL (same as API_BASE_URL)
+
+[build]
+builder = "dockerfile"
+
+[[services]]
+name = "api"
+dockerfilePath = "Dockerfile"
+
+[services.deploy]
+startCommand = "uvicorn app.api.main:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+
+[[services]]
+name = "frontend"
+dockerfilePath = "Dockerfile.frontend"
+
+[services.deploy]
+startCommand = "streamlit run frontend/app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true"

@@ -145,7 +145,7 @@ Rules apply automatically to all Claude Code sessions in this repo:
 | `code-review` | Review checklist, severity levels, mandatory security triggers. |
 | `testing` | 80% coverage minimum, TDD workflow, AAA test structure, pytest conventions. |
 | `security` | Pre-commit security checklist, secret management, response protocol for critical findings. |
-| `git-workflow` | Conventional commits, PR process, `git diff [base]...HEAD` for full PR context. |
+| `git-workflow` | Conventional commits, PR process, `git diff [base]...HEAD` for full PR context. After sprint end push modifications to the current working branch always|
 | `patterns` | Repository pattern via Protocol, frozen dataclass API responses, dependency injection. |
 | `python/coding-style` | Applies to `*.py` files — PEP 8, black/isort/ruff, frozen dataclasses, type annotations. |
 | `python/patterns` | Applies to `*.py` files — Protocol duck typing, dataclass DTOs, context managers, generators. |

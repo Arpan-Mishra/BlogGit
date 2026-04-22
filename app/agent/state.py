@@ -58,6 +58,7 @@ class BlogState(TypedDict):
     repo_summary: RepoSummary | None
     intake_answers: dict[str, str]
     outline_plan: str | None
+    user_citations: tuple[str, ...]
     current_draft: str | None
     revision_history: list[DraftVersion]
     notion_page_id: str | None

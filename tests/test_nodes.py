@@ -314,7 +314,7 @@ class TestMakeIntakeNode:
 
         result = await node(state)
 
-        assert result.get("phase") == "draft"
+        assert result.get("phase") == "outline"
 
     @pytest.mark.asyncio
     async def test_intake_answers_accumulate(self) -> None:
@@ -766,3 +766,407 @@ class TestMakeRevisionNode:
         assert isinstance(prompt_arg, str)
         assert "# Original Draft" in prompt_arg
         assert "Make it shorter." in prompt_arg
+
+
+# ---------------------------------------------------------------------------
+# _extract_citation_url
+# ---------------------------------------------------------------------------
+
+
+class TestExtractCitationUrl:
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("add citation: https://example.com", "https://example.com"),
+            ("please include https://arxiv.org/abs/1234 as a reference", "https://arxiv.org/abs/1234"),
+            ("cite this https://openai.com/research", "https://openai.com/research"),
+            ("add this reference https://paper.com/foo.", "https://paper.com/foo"),
+            ("reference: https://docs.python.org/3/)", "https://docs.python.org/3/"),
+        ],
+    )
+    def test_extracts_url_from_citation_intent(self, text: str, expected: str) -> None:
+        from app.agent.nodes import _extract_citation_url
+
+        assert _extract_citation_url(text) == expected
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "make the intro shorter",
+            "add more technical depth",
+            "https://example.com without citation keyword",
+            "",
+        ],
+    )
+    def test_returns_none_when_no_citation_intent(self, text: str) -> None:
+        from app.agent.nodes import _extract_citation_url
+
+        assert _extract_citation_url(text) is None
+
+
+# ---------------------------------------------------------------------------
+# Citation intercept in intake_node
+# ---------------------------------------------------------------------------
+
+
+class TestIntakeCitationIntercept:
+    def _make_state(self, messages: list, user_citations: tuple = ()) -> dict:
+        from app.agent.state import RepoSummary
+
+        summary = RepoSummary(
+            language="Python",
+            modules=("app",),
+            purpose="A test repo.",
+            notable_commits=(),
+            readme_excerpt="Test readme.",
+        )
+        return {
+            "user_id": "u1",
+            "session_id": "s1",
+            "phase": "intake",
+            "messages": messages,
+            "repo_url": "https://github.com/owner/repo",
+            "repo_summary": summary,
+            "intake_answers": {},
+            "user_citations": user_citations,
+            "current_draft": None,
+            "revision_history": [],
+            "notion_page_id": None,
+            "notion_title": None,
+            "medium_markdown": None,
+            "medium_url": None,
+            "linkedin_post": None,
+            "linkedin_post_url": None,
+            "outreach_dm": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_citation_message_appends_url_and_reraises_question(self) -> None:
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        from app.agent.nodes import INTAKE_QUESTIONS, make_intake_node
+
+        node = make_intake_node()
+        _, q0_text = INTAKE_QUESTIONS[0]
+        messages = [
+            AIMessage(content=q0_text),
+            HumanMessage(content="add citation: https://arxiv.org/abs/1234"),
+        ]
+        state = self._make_state(messages=messages)
+
+        result = await node(state)
+
+        assert result["phase"] == "intake"
+        assert "https://arxiv.org/abs/1234" in result["user_citations"]
+        ai_messages = [m for m in result["messages"] if isinstance(m, AIMessage)]
+        # The confirmation message should re-ask the current question
+        assert any(q0_text in m.content for m in ai_messages)
+
+    @pytest.mark.asyncio
+    async def test_citation_accumulates_with_existing_citations(self) -> None:
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        from app.agent.nodes import INTAKE_QUESTIONS, make_intake_node
+
+        node = make_intake_node()
+        _, q0_text = INTAKE_QUESTIONS[0]
+        messages = [
+            AIMessage(content=q0_text),
+            HumanMessage(content="cite https://example.com please"),
+        ]
+        state = self._make_state(
+            messages=messages,
+            user_citations=("https://prior.com",),
+        )
+
+        result = await node(state)
+
+        assert "https://prior.com" in result["user_citations"]
+        assert "https://example.com" in result["user_citations"]
+
+
+# ---------------------------------------------------------------------------
+# Citation intercept in revision_node
+# ---------------------------------------------------------------------------
+
+
+class TestRevisionCitationIntercept:
+    def _make_state(self, user_feedback: str, user_citations: tuple = ()) -> dict:
+        from langchain_core.messages import HumanMessage
+
+        from app.agent.state import RepoSummary
+
+        summary = RepoSummary(
+            language="Python",
+            modules=("app",),
+            purpose="A test repo.",
+            notable_commits=(),
+            readme_excerpt="Test readme.",
+        )
+        return {
+            "user_id": "u1",
+            "session_id": "s1",
+            "phase": "revise",
+            "messages": [HumanMessage(content=user_feedback)],
+            "repo_url": "https://github.com/owner/repo",
+            "repo_summary": summary,
+            "intake_answers": {},
+            "user_citations": user_citations,
+            "current_draft": "# Draft\n\nContent here.",
+            "revision_history": [],
+            "notion_page_id": None,
+            "notion_title": None,
+            "medium_markdown": None,
+            "medium_url": None,
+            "linkedin_post": None,
+            "linkedin_post_url": None,
+            "outreach_dm": None,
+        }
+
+    def _make_mock_llm(self, content: str = "Revised.") -> MagicMock:
+        from langchain_core.messages import AIMessage
+
+        llm = MagicMock()
+        llm.ainvoke = AsyncMock(return_value=AIMessage(content=content))
+        return llm
+
+    @pytest.mark.asyncio
+    async def test_citation_url_extracted_and_stored_in_state(self) -> None:
+        from app.agent.nodes import make_revision_node
+
+        node = make_revision_node(llm=self._make_mock_llm())
+        state = self._make_state("add citation: https://paper.ai/foo make intro shorter")
+
+        result = await node(state)
+
+        assert "https://paper.ai/foo" in result["user_citations"]
+
+    @pytest.mark.asyncio
+    async def test_citation_url_injected_into_llm_prompt(self) -> None:
+        from app.agent.nodes import make_revision_node
+
+        llm = self._make_mock_llm()
+        node = make_revision_node(llm=llm)
+        state = self._make_state("add citation: https://paper.ai/foo make intro shorter")
+
+        await node(state)
+
+        prompt = llm.ainvoke.call_args[0][0]
+        assert "https://paper.ai/foo" in prompt
+
+
+# ---------------------------------------------------------------------------
+# _build_drafting_prompt with user_citations
+# ---------------------------------------------------------------------------
+
+
+class TestBuildDraftingPromptCitations:
+    def _make_summary(self):
+        from app.agent.state import RepoSummary
+
+        return RepoSummary(
+            language="Python",
+            modules=("app",),
+            purpose="A test tool.",
+            notable_commits=(),
+            readme_excerpt="Test.",
+        )
+
+    def test_user_citations_section_included_when_provided(self) -> None:
+        from app.agent.nodes import _build_drafting_prompt
+
+        prompt = _build_drafting_prompt(
+            system_prompt="System.",
+            repo_summary=self._make_summary(),
+            intake_answers={},
+            user_citations=("https://example.com", "https://another.org"),
+        )
+
+        assert "https://example.com" in prompt
+        assert "https://another.org" in prompt
+        assert "User-Provided Citations" in prompt
+
+    def test_no_citations_section_when_empty(self) -> None:
+        from app.agent.nodes import _build_drafting_prompt
+
+        prompt = _build_drafting_prompt(
+            system_prompt="System.",
+            repo_summary=self._make_summary(),
+            intake_answers={},
+            user_citations=(),
+        )
+
+        assert "User-Provided Citations" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# _is_approval
+# ---------------------------------------------------------------------------
+
+
+class TestIsApproval:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "yes",
+            "Yes!",
+            "looks good",
+            "ok",
+            "lgtm",
+            "perfect",
+            "approve",
+            "fine",
+            "proceed",
+            "sounds good",
+        ],
+    )
+    def test_approval_texts_return_true(self, text: str) -> None:
+        from app.agent.nodes import _is_approval
+
+        assert _is_approval(text) is True
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "no, change the intro",
+            "I don't like the structure, please add a section about testing",
+            "make it shorter and remove the deployment section",
+        ],
+    )
+    def test_non_approval_texts_return_false(self, text: str) -> None:
+        from app.agent.nodes import _is_approval
+
+        assert _is_approval(text) is False
+
+    def test_long_affirmative_text_returns_false(self) -> None:
+        from app.agent.nodes import _is_approval
+
+        # >120 chars should not be treated as approval even if it starts affirmatively
+        long_text = "yes " + "this looks good but please also add more details about the CI pipeline and deployment workflow " * 2
+        assert _is_approval(long_text) is False
+
+
+# ---------------------------------------------------------------------------
+# make_outline_node
+# ---------------------------------------------------------------------------
+
+
+class TestOutlineNode:
+    def _make_state(
+        self,
+        outline_plan: str | None = None,
+        user_message: str = "looks good",
+        user_citations: tuple = (),
+    ) -> dict:
+        from langchain_core.messages import HumanMessage
+
+        from app.agent.state import RepoSummary
+
+        summary = RepoSummary(
+            language="Python",
+            modules=("app",),
+            purpose="A test repo.",
+            notable_commits=("Add feature X",),
+            readme_excerpt="Test readme.",
+        )
+        return {
+            "user_id": "u1",
+            "session_id": "s1",
+            "phase": "outline",
+            "messages": [HumanMessage(content=user_message)],
+            "repo_url": "https://github.com/owner/repo",
+            "repo_summary": summary,
+            "intake_answers": {"audience": "developers"},
+            "outline_plan": outline_plan,
+            "user_citations": user_citations,
+            "current_draft": None,
+            "revision_history": [],
+            "notion_page_id": None,
+            "notion_title": None,
+            "medium_markdown": None,
+            "medium_url": None,
+            "linkedin_post": None,
+            "linkedin_post_url": None,
+            "outreach_dm": None,
+        }
+
+    def _make_mock_llm(self, content: str = "## Outline\n\n1. Intro\n2. Body\n3. Conclusion") -> MagicMock:
+        from langchain_core.messages import AIMessage
+
+        llm = MagicMock()
+        llm.ainvoke = AsyncMock(return_value=AIMessage(content=content))
+        return llm
+
+    @pytest.mark.asyncio
+    async def test_first_invocation_generates_outline(self) -> None:
+        from app.agent.nodes import make_outline_node
+
+        llm = self._make_mock_llm()
+        node = make_outline_node(llm=llm)
+        state = self._make_state(outline_plan=None, user_message="start outline")
+
+        result = await node(state)
+
+        assert result["outline_plan"] is not None
+        assert result["phase"] == "outline"
+        assert llm.ainvoke.called
+
+    @pytest.mark.asyncio
+    async def test_approval_transitions_to_draft(self) -> None:
+        from app.agent.nodes import make_outline_node
+
+        node = make_outline_node(llm=self._make_mock_llm())
+        state = self._make_state(outline_plan="## Outline\n\n1. Intro", user_message="looks good")
+
+        result = await node(state)
+
+        assert result["phase"] == "draft"
+
+    @pytest.mark.asyncio
+    async def test_feedback_revises_outline(self) -> None:
+        from app.agent.nodes import make_outline_node
+
+        revised = "## Revised Outline\n\n1. New Intro\n2. Body\n3. Conclusion"
+        llm = self._make_mock_llm(content=revised)
+        node = make_outline_node(llm=llm)
+        state = self._make_state(
+            outline_plan="## Outline\n\n1. Intro",
+            user_message="please add a section about testing",
+        )
+
+        result = await node(state)
+
+        assert result["phase"] == "outline"
+        assert result["outline_plan"] == revised
+        assert llm.ainvoke.called
+
+    @pytest.mark.asyncio
+    async def test_citation_intercept_during_outline(self) -> None:
+        from app.agent.nodes import make_outline_node
+
+        node = make_outline_node(llm=self._make_mock_llm())
+        state = self._make_state(
+            outline_plan="## Outline\n\n1. Intro",
+            user_message="add citation: https://arxiv.org/paper",
+        )
+
+        result = await node(state)
+
+        assert "https://arxiv.org/paper" in result["user_citations"]
+        assert result["phase"] == "outline"
+
+    @pytest.mark.asyncio
+    async def test_outline_plan_stored_in_messages(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from app.agent.nodes import make_outline_node
+
+        outline_text = "## Draft Outline\n\n1. Intro\n2. Implementation\n3. Conclusion"
+        llm = self._make_mock_llm(content=outline_text)
+        node = make_outline_node(llm=llm)
+        state = self._make_state(outline_plan=None, user_message="start")
+
+        result = await node(state)
+
+        ai_messages = [m for m in result["messages"] if isinstance(m, AIMessage)]
+        assert any(outline_text in m.content for m in ai_messages)

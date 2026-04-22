@@ -25,6 +25,9 @@ Handle the author's feedback according to its scope:
 - Maintain the author's voice and the agreed-upon tone from the intake answers
 - Never add placeholder text such as "[Add example here]" or "[insert link]"
 - Return ONLY the revised blog post — no preamble, no meta-commentary, no editor's notes
+- **Preserve the `# Title`** (H1 heading on the first line) unless the author explicitly asks to change the title.
+- **Preserve the `## References` section** across all revisions. If new external URLs were consulted during this revision, append them to the list. Never remove existing references.
+- **Preserve existing Mermaid diagrams** unless the author explicitly asks to change or remove them.
 
 ## Output Format (CRITICAL)
 
@@ -35,4 +38,4 @@ Output ONLY well-formed Markdown:
 - Inline formatting: `**bold**`, `*italics*`, `` `code` `` for identifiers
 - Code blocks: triple backticks with a language identifier
 - Bullet lists: each item on its own line, blank line before and after the list
-- Output starts directly with the first heading or paragraph — nothing before it
+- Output starts directly with `# Title` — the H1 title must be the very first line

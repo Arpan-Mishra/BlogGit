@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     app_base_url: str = Field(
         default="http://localhost:8000", description="Base URL of the FastAPI backend"
     )
+    frontend_url: str = Field(
+        default="http://localhost:8501",
+        description="Base URL of the Streamlit frontend (OAuth post-auth redirect destination)",
+    )
     debug: bool = Field(default=False)
 
 

@@ -168,7 +168,7 @@ class TestAuthCallback:
                         follow_redirects=False,
                     )
                     assert callback_resp.status_code == 302
-                    assert callback_resp.headers["location"] == "/"
+                    assert callback_resp.headers["location"] == "http://localhost:8501?connected=github"
 
             app.dependency_overrides.clear()
             get_settings.cache_clear()

@@ -79,10 +79,10 @@ class TestRoutePhase:
 
 
 class TestRouteAfterIntake:
-    def test_draft_phase_routes_to_drafting(self) -> None:
+    def test_outline_phase_routes_to_outline(self) -> None:
         from app.agent.graph import route_after_intake
 
-        assert route_after_intake(_make_state("draft")) == "drafting"
+        assert route_after_intake(_make_state("outline")) == "outline"
 
     def test_intake_phase_routes_to_end(self) -> None:
         from langgraph.graph import END
@@ -91,7 +91,7 @@ class TestRouteAfterIntake:
 
         assert route_after_intake(_make_state("intake")) == END
 
-    def test_any_non_draft_phase_routes_to_end(self) -> None:
+    def test_any_non_outline_phase_routes_to_end(self) -> None:
         from langgraph.graph import END
 
         from app.agent.graph import route_after_intake

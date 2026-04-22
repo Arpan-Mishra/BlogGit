@@ -83,7 +83,7 @@ async def auth_start(
         value=state,
         httponly=True,
         samesite="lax",
-        secure=False,  # set to True in production behind HTTPS
+        secure=settings.app_base_url.startswith("https://"),
         max_age=600,  # 10-minute window to complete the flow
     )
     return response
@@ -138,7 +138,7 @@ async def auth_callback(
         scopes=tokens.scope.split(",") if tokens.scope else None,
     )
 
-    response = RedirectResponse(url="/", status_code=302)
+    response = RedirectResponse(url=f"{settings.frontend_url}?connected={provider}", status_code=302)
     response.delete_cookie(key=_STATE_COOKIE)
     return response
 

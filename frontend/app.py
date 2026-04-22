@@ -14,11 +14,13 @@ Usage:
 """
 
 import logging
+import re
 import uuid
 from typing import Generator
 
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 import sys
 from pathlib import Path
@@ -129,6 +131,15 @@ def _init_session() -> None:
         st.session_state["repo_url"] = ""
     if "github_token" not in st.session_state:
         st.session_state["github_token"] = ""
+    # Publish results
+    if "notion_page_url" not in st.session_state:
+        st.session_state["notion_page_url"] = None
+    if "medium_markdown" not in st.session_state:
+        st.session_state["medium_markdown"] = None
+    if "linkedin_post" not in st.session_state:
+        st.session_state["linkedin_post"] = None
+    if "outreach_dm" not in st.session_state:
+        st.session_state["outreach_dm"] = None
 
 
 def _render_sidebar() -> None:
@@ -166,6 +177,9 @@ def _render_sidebar() -> None:
         "outline": "Planning sections",
         "draft": "Drafting post",
         "revise": "Revising",
+        "notion": "Published to Notion",
+        "medium": "Medium content ready",
+        "linkedin": "LinkedIn content ready",
         "done": "Complete",
     }
     st.sidebar.markdown(f"**Status:** {phase_labels.get(phase, phase)}")
@@ -174,7 +188,7 @@ def _render_sidebar() -> None:
 def _render_chat_history() -> None:
     for msg in st.session_state["chat_history"]:
         with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+            _render_message_content(msg["content"])
 
 
 def _handle_user_input(user_input: str) -> None:
@@ -202,6 +216,10 @@ def _handle_user_input(user_input: str) -> None:
             if event_type == "message":
                 full_response += data
                 placeholder.markdown(full_response + " ")
+            elif event_type == "status":
+                # Show a spinner-style status while no response content yet.
+                if not full_response:
+                    placeholder.markdown(f"*{data}*")
             elif event_type == "done":
                 phase_after = data
             elif event_type == "error":
@@ -220,13 +238,77 @@ def _handle_user_input(user_input: str) -> None:
     st.session_state["phase"] = phase_after
 
 
+_MERMAID_FENCE_RE = re.compile(r"```mermaid\n(.*?)\n```", re.DOTALL)
+
+
+def _split_mermaid_blocks(content: str) -> list[tuple[str, str]]:
+    """Split *content* into alternating text and mermaid diagram segments.
+
+    Returns a list of ``(kind, text)`` tuples where *kind* is either
+    ``"text"`` or ``"mermaid"``.
+    """
+    parts: list[tuple[str, str]] = []
+    last = 0
+    for m in _MERMAID_FENCE_RE.finditer(content):
+        if m.start() > last:
+            parts.append(("text", content[last : m.start()]))
+        parts.append(("mermaid", m.group(1).strip()))
+        last = m.end()
+    if last < len(content):
+        parts.append(("text", content[last:]))
+    return parts
+
+
+def _render_mermaid(diagram_code: str) -> None:
+    """Render a Mermaid diagram via CDN inside an st.components iframe."""
+    safe = diagram_code.replace("`", "\\`")
+    uid = abs(hash(diagram_code)) % (10**8)
+    html = f"""<!DOCTYPE html><html><body style="margin:0;background:#ffffff;">
+<div id="m{uid}"></div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({{
+    startOnLoad: false,
+    theme: 'base',
+    themeVariables: {{
+      background: '#ffffff',
+      primaryColor: '#6366f1',
+      primaryTextColor: '#ffffff',
+      primaryBorderColor: '#4f46e5',
+      secondaryColor: '#e0e7ff',
+      secondaryTextColor: '#1f2937',
+      secondaryBorderColor: '#818cf8',
+      tertiaryColor: '#f3f4f6',
+      tertiaryTextColor: '#1f2937',
+      tertiaryBorderColor: '#d1d5db',
+      lineColor: '#6b7280',
+      edgeLabelBackground: '#f3f4f6',
+      fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+      fontSize: '14px'
+    }}
+  }});
+  const {{ svg }} = await mermaid.render('g{uid}', `{safe}`);
+  document.getElementById('m{uid}').innerHTML = svg;
+</script></body></html>"""
+    components.html(html, height=450, scrolling=True)
+
+
+def _render_message_content(content: str) -> None:
+    """Render message content, converting Mermaid fences to live diagrams."""
+    for part_type, part_content in _split_mermaid_blocks(content):
+        if part_type == "mermaid":
+            _render_mermaid(part_content)
+        elif part_content.strip():
+            st.markdown(part_content)
+
+
 def _render_draft_panel() -> None:
     """Show the current draft in an expandable panel when in revise phase."""
     draft = st.session_state.get("current_draft")
     if not draft:
         return
     with st.expander("Current draft (click to expand)", expanded=False):
-        st.markdown(draft)
+        _render_message_content(draft)
         col1, col2 = st.columns(2)
         with col1:
             if st.button("Copy to clipboard", key="btn_copy_draft"):
@@ -239,6 +321,153 @@ def _render_draft_panel() -> None:
                 mime="text/markdown",
                 key="btn_download_draft",
             )
+
+
+def _call_publish_api(endpoint: str, payload: dict) -> dict | None:
+    """POST to a /publish/* endpoint; return JSON on success or None on error."""
+    try:
+        resp = requests.post(f"{API_BASE_URL}/publish/{endpoint}", json=payload, timeout=60)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.exceptions.ConnectionError:
+        st.error("Cannot connect to the backend. Is `uvicorn app.api.main:app` running?")
+    except requests.exceptions.HTTPError as exc:
+        try:
+            detail = exc.response.json().get("detail", str(exc))
+        except Exception:
+            detail = str(exc)
+        st.error(f"Publish error: {detail}")
+    return None
+
+
+def _render_publish_panel() -> None:
+    """Render the multi-platform publish panel when a draft is available."""
+    draft = st.session_state.get("current_draft")
+    if not draft:
+        return
+
+    st.markdown("---")
+    st.subheader("Publish")
+
+    notion_tab, medium_tab, linkedin_tab = st.tabs(["Notion", "Medium", "LinkedIn"])
+
+    # ------------------------------------------------------------------
+    # Notion tab
+    # ------------------------------------------------------------------
+    with notion_tab:
+        notion_token = st.session_state.get("notion_token", "")
+        parent_page_id = st.session_state.get("notion_parent_page_id", "")
+
+        if st.session_state.get("notion_page_url"):
+            st.success("Published to Notion")
+            st.markdown(f"[Open in Notion]({st.session_state['notion_page_url']})")
+        else:
+            if not notion_token:
+                st.info("Add your Notion integration token in the sidebar to publish.")
+            elif not parent_page_id:
+                st.info("Add the Notion parent page ID in the sidebar.")
+            else:
+                if st.button("Publish to Notion", key="btn_publish_notion", type="primary"):
+                    with st.spinner("Creating Notion page..."):
+                        result = _call_publish_api(
+                            "notion",
+                            {
+                                "session_id": st.session_state["session_id"],
+                                "token": notion_token,
+                                "parent_page_id": parent_page_id,
+                            },
+                        )
+                    if result:
+                        st.session_state["notion_page_url"] = result.get("page_url", "")
+                        st.success(
+                            f"Published: [{result.get('notion_title', 'View page')}]"
+                            f"({result.get('page_url', '')})"
+                        )
+                        st.rerun()
+
+    # ------------------------------------------------------------------
+    # Medium tab
+    # ------------------------------------------------------------------
+    with medium_tab:
+        medium_markdown = st.session_state.get("medium_markdown")
+
+        if not medium_markdown:
+            if st.button("Adapt for Medium", key="btn_adapt_medium", type="primary"):
+                with st.spinner("Adapting draft for Medium..."):
+                    result = _call_publish_api(
+                        "medium",
+                        {"session_id": st.session_state["session_id"]},
+                    )
+                if result:
+                    st.session_state["medium_markdown"] = result.get("medium_markdown", "")
+                    st.rerun()
+        else:
+            st.success("Medium-ready content prepared.")
+            col_dl, col_reset = st.columns([3, 1])
+            with col_dl:
+                st.download_button(
+                    label="Download Medium .md",
+                    data=medium_markdown,
+                    file_name="medium_post.md",
+                    mime="text/markdown",
+                    key="btn_download_medium",
+                )
+            with col_reset:
+                if st.button("Regenerate", key="btn_regen_medium"):
+                    st.session_state["medium_markdown"] = None
+                    st.rerun()
+            with st.expander("Preview Medium content", expanded=False):
+                st.markdown(medium_markdown)
+
+    # ------------------------------------------------------------------
+    # LinkedIn tab
+    # ------------------------------------------------------------------
+    with linkedin_tab:
+        linkedin_post = st.session_state.get("linkedin_post")
+        outreach_dm = st.session_state.get("outreach_dm")
+
+        if not linkedin_post:
+            if st.button("Generate LinkedIn content", key="btn_gen_linkedin", type="primary"):
+                with st.spinner("Generating LinkedIn post and outreach DM..."):
+                    result = _call_publish_api(
+                        "linkedin",
+                        {"session_id": st.session_state["session_id"]},
+                    )
+                if result:
+                    st.session_state["linkedin_post"] = result.get("linkedin_post", "")
+                    st.session_state["outreach_dm"] = result.get("outreach_dm", "")
+                    st.rerun()
+        else:
+            col_post, col_regen = st.columns([3, 1])
+            with col_regen:
+                if st.button("Regenerate", key="btn_regen_linkedin"):
+                    st.session_state["linkedin_post"] = None
+                    st.session_state["outreach_dm"] = None
+                    st.rerun()
+
+            st.markdown("**LinkedIn Post**")
+            st.text_area(
+                "LinkedIn post (copy and paste to LinkedIn)",
+                value=linkedin_post,
+                height=300,
+                key="ta_linkedin_post",
+                label_visibility="collapsed",
+            )
+            char_count = len(linkedin_post)
+            st.caption(f"{char_count} characters")
+
+            if outreach_dm:
+                st.markdown("**Outreach DM**")
+                st.text_area(
+                    "Outreach DM (under 300 chars)",
+                    value=outreach_dm,
+                    height=100,
+                    key="ta_outreach_dm",
+                    label_visibility="collapsed",
+                )
+                dm_count = len(outreach_dm)
+                color = "green" if dm_count <= 300 else "red"
+                st.caption(f":{color}[{dm_count}/300 characters]")
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +483,14 @@ def main() -> None:
     )
 
     _init_session()
+
+    # Detect OAuth callback redirects (e.g. ?connected=linkedin after OAuth flow)
+    _connected_provider = st.query_params.get("connected")
+    if _connected_provider:
+        st.session_state[f"{_connected_provider}_connected"] = True
+        st.query_params.clear()
+        st.toast(f"{_connected_provider.capitalize()} connected!", icon="✅")
+
     _render_sidebar()
 
     st.title("Blog Copilot")
@@ -265,6 +502,7 @@ def main() -> None:
 
     _render_chat_history()
     _render_draft_panel()
+    _render_publish_panel()
 
     # Chat input — shown for all phases except "done"
     if st.session_state["phase"] != "done":

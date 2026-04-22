@@ -10,28 +10,6 @@ status endpoint. Buttons trigger the OAuth redirect flow.
 
 import streamlit as st
 
-_PROVIDERS = [
-    {
-        "key": "github",
-        "label": "GitHub",
-        "icon": "",
-        "description": "Required to read repositories",
-    },
-    {
-        "key": "notion",
-        "label": "Notion",
-        "icon": "",
-        "description": "Required to publish blog posts",
-    },
-    {
-        "key": "linkedin",
-        "label": "LinkedIn",
-        "icon": "",
-        "description": "Optional — post to LinkedIn",
-    },
-]
-
-
 def render_connections(api_base_url: str, github_token_key: str = "github_token") -> None:
     """Render connection status cards in the Streamlit sidebar.
 
@@ -45,15 +23,10 @@ def render_connections(api_base_url: str, github_token_key: str = "github_token"
     """
     st.sidebar.markdown("### Connections")
 
-    # GitHub — token-based for v1 (OAuth in Sprint 7)
     _render_github_connection(github_token_key)
-
-    # Notion, LinkedIn — OAuth placeholders
-    for provider in _PROVIDERS[1:]:
-        _render_oauth_placeholder(provider, api_base_url)
-
-    # Medium — integration token
+    _render_notion_connection()
     _render_medium_token()
+    _render_linkedin_connection(api_base_url)
 
     st.sidebar.divider()
 
@@ -77,20 +50,56 @@ def _render_github_connection(token_key: str) -> None:
             st.rerun()
 
 
-def _render_oauth_placeholder(provider: dict, api_base_url: str) -> None:
-    connected = st.session_state.get(f"connected_{provider['key']}", False)
-    label = provider["label"] + (" (connected)" if connected else "")
-    with st.sidebar.expander(label, expanded=False):
-        st.caption(provider["description"])
+def _render_notion_connection() -> None:
+    token = st.session_state.get("notion_token", "")
+    page_id = st.session_state.get("notion_parent_page_id", "")
+    connected = bool(token)
+
+    label = "Notion" + (" (connected)" if connected else "")
+    with st.sidebar.expander(label, expanded=not connected):
+        st.caption(
+            "Paste your [Notion integration token](https://www.notion.so/my-integrations) "
+            "and the parent page ID where posts will be created."
+        )
+        new_token = st.text_input(
+            "Notion token",
+            value=token,
+            type="password",
+            key="_notion_token_input",
+            label_visibility="collapsed",
+            placeholder="secret_...",
+        )
+        new_page_id = st.text_input(
+            "Parent page ID",
+            value=page_id,
+            key="_notion_page_id_input",
+            label_visibility="collapsed",
+            placeholder="32-character page UUID",
+        )
+        if new_token != token:
+            st.session_state["notion_token"] = new_token
+            st.rerun()
+        if new_page_id != page_id:
+            st.session_state["notion_parent_page_id"] = new_page_id
+            st.rerun()
+
+
+def _render_linkedin_connection(api_base_url: str) -> None:
+    connected = st.session_state.get("linkedin_connected", False)
+    label = "LinkedIn" + (" (connected)" if connected else "")
+    with st.sidebar.expander(label, expanded=not connected):
+        st.caption("Optional — generate a LinkedIn post from your draft.")
         if connected:
-            if st.button(f"Disconnect {provider['label']}", key=f"btn_disconnect_{provider['key']}"):
-                st.session_state[f"connected_{provider['key']}"] = False
+            st.success("LinkedIn connected.")
+            if st.button("Disconnect", key="_linkedin_disconnect"):
+                st.session_state["linkedin_connected"] = False
                 st.rerun()
         else:
-            if st.button(f"Connect {provider['label']}", key=f"btn_connect_{provider['key']}"):
-                # In Sprint 7 this opens the OAuth flow via a redirect.
-                # For now, show a placeholder message.
-                st.info(f"OAuth for {provider['label']} will be available in Sprint 7.")
+            st.link_button(
+                "Connect LinkedIn",
+                url=f"{api_base_url}/auth/linkedin/start",
+            )
+            st.caption("You will be redirected to LinkedIn to authorise and then returned here.")
 
 
 def _render_medium_token() -> None:

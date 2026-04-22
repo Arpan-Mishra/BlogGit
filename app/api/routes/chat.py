@@ -12,13 +12,16 @@ import logging
 import os
 from typing import AsyncGenerator
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from app.agent.graph import build_graph
 from app.agent.state import BlogState
+from app.api.limiter import limiter
+from app.api.session_store import _sessions
 from app.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
@@ -26,10 +29,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # ---------------------------------------------------------------------------
-# In-memory session store (Sprint 4 — replaced by DB checkpointer in Sprint 7)
+# Per-node status messages surfaced to the frontend via SSE "status" events
 # ---------------------------------------------------------------------------
 
-_sessions: dict[str, BlogState] = {}
+_NODE_STATUS: dict[str, str] = {
+    "repo_analyzer": "Analysing repository...",
+    "intake": "Preparing question...",
+    "outline": "Planning blog sections...",
+    "drafting": "Writing draft...",
+    "revision": "Revising draft...",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +70,7 @@ def _make_initial_state(request: ChatRequest) -> BlogState:
         repo_summary=None,
         intake_answers={},
         outline_plan=None,
+        user_citations=(),
         current_draft=None,
         revision_history=[],
         notion_page_id=None,
@@ -75,8 +85,6 @@ def _make_initial_state(request: ChatRequest) -> BlogState:
 
 def _build_graph_for_request(request: ChatRequest, settings: Settings):
     """Construct the LangGraph graph with real tools and LLMs."""
-    from langchain_anthropic import ChatAnthropic
-
     from app.tools.mcp_factory import build_github_tools
 
     github_token = request.github_token or os.environ.get("GITHUB_TOKEN", "")
@@ -86,7 +94,7 @@ def _build_graph_for_request(request: ChatRequest, settings: Settings):
     drafting_llm = ChatAnthropic(
         model=settings.anthropic_model,
         api_key=settings.anthropic_api_key.get_secret_value(),
-        max_tokens=2048,
+        max_tokens=8096,
     )
 
     search_tool = None
@@ -105,11 +113,10 @@ def _build_graph_for_request(request: ChatRequest, settings: Settings):
 
 def _make_repo_llm(settings: Settings):
     """Build the structured-output LLM used by the repo_analyzer node."""
-    from langchain_anthropic import ChatAnthropic
+    import json
+
     from langchain_core.messages import HumanMessage as LCHumanMessage
     from langchain_core.runnables import RunnableLambda
-
-    import json
 
     from app.agent.state import RepoSummary
 
@@ -157,8 +164,10 @@ def _make_repo_llm(settings: Settings):
 
 
 @router.post("/chat")
+@limiter.limit("10/minute")
 async def chat(
-    request: ChatRequest,
+    request: Request,
+    body: ChatRequest,
     settings: Settings = Depends(get_settings),
 ) -> EventSourceResponse:
     """Stream blog copilot responses as Server-Sent Events.
@@ -166,39 +175,48 @@ async def chat(
     On a new session, repo_url is required. Subsequent turns append the user
     message to the existing state and continue the graph from where it left off.
     """
-    if request.session_id not in _sessions:
-        if not request.repo_url:
+    if body.session_id not in _sessions:
+        if not body.repo_url:
             raise HTTPException(
                 status_code=400,
                 detail="repo_url is required to start a new session",
             )
-        _sessions[request.session_id] = _make_initial_state(request)
+        _sessions[body.session_id] = _make_initial_state(body)
 
-    state = _sessions[request.session_id]
+    state = _sessions[body.session_id]
     # Append incoming user message
-    updated_messages = list(state["messages"]) + [HumanMessage(content=request.message)]
+    updated_messages = list(state["messages"]) + [HumanMessage(content=body.message)]
     state = {**state, "messages": updated_messages}
 
     prev_message_count = len(updated_messages)
-    graph = _build_graph_for_request(request, settings)
+    graph = _build_graph_for_request(body, settings)
 
     async def _event_generator() -> AsyncGenerator[dict, None]:
+        # Accumulate partial state updates streamed from each node.
+        # stream_mode="updates" yields {node_name: partial_state_dict} per step.
+        accumulated: dict = dict(state)
         try:
-            result = await graph.ainvoke(state)
+            async for chunk in graph.astream(state, stream_mode="updates"):
+                for node_name, node_output in chunk.items():
+                    status = _NODE_STATUS.get(node_name)
+                    if status:
+                        logger.info("graph node started: %s", node_name)
+                        yield {"event": "status", "data": status}
+                    accumulated.update(node_output)
         except Exception as exc:
-            logger.exception("graph.ainvoke failed: %s", exc)
+            logger.exception("graph.astream failed: %s", exc)
             yield {"event": "error", "data": str(exc)}
             return
 
-        _sessions[request.session_id] = result
+        _sessions[body.session_id] = accumulated
 
-        new_messages = result.get("messages", [])[prev_message_count:]
+        new_messages = accumulated.get("messages", [])[prev_message_count:]
         for msg in new_messages:
             if isinstance(msg, AIMessage):
                 yield {"event": "message", "data": msg.content}
 
         # Signal stream end
-        phase = result.get("phase", "")
+        phase = accumulated.get("phase", "")
         yield {"event": "done", "data": phase}
 
     return EventSourceResponse(_event_generator())
