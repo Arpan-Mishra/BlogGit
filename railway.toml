@@ -1,7 +1,10 @@
 # Railway deployment configuration
-# This file configures the API service (Dockerfile).
-# The frontend service is a second Railway service pointing to the same repo
-# with Dockerfile Path = Dockerfile.frontend set in the Railway dashboard.
+# Both the API and frontend services point to this repo.
+# Dockerfile path and health check are configured per-service in the Railway dashboard:
+#   API service:      Dockerfile path = Dockerfile
+#                     Health check path = /health
+#   Frontend service: Dockerfile path = Dockerfile.frontend
+#                     (no health check — Streamlit does not expose /health)
 #
 # Required env vars (set in Railway dashboard → Variables for each service):
 #   API service: all vars from .env.example
@@ -9,7 +12,3 @@
 
 [build]
 builder = "DOCKERFILE"
-
-[deploy]
-healthcheckPath = "/health"
-healthcheckTimeout = 30
