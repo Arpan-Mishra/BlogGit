@@ -17,8 +17,6 @@ COPY app/ ./app/
 COPY prompts/ ./prompts/
 
 # Expose the API port
-EXPOSE 8000
-
 # Non-root user for security
 RUN useradd --create-home appuser
 USER appuser
