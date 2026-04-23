@@ -1,5 +1,5 @@
 """
-OAuth connection status widgets for the Blog Copilot sidebar.
+OAuth connection status widgets for the BlogGit sidebar.
 
 Displays the connection state for each platform (GitHub, Notion, LinkedIn,
 Medium) and provides action buttons or token inputs for connecting them.
@@ -9,6 +9,8 @@ status endpoint. Buttons trigger the OAuth redirect flow.
 """
 
 import streamlit as st
+
+from app.tools.notion_mcp import parse_notion_page_id
 
 def render_connections(api_base_url: str, github_token_key: str = "github_token") -> None:
     """Render connection status cards in the Streamlit sidebar.
@@ -25,7 +27,6 @@ def render_connections(api_base_url: str, github_token_key: str = "github_token"
 
     _render_github_connection(github_token_key)
     _render_notion_connection()
-    _render_medium_token()
     _render_linkedin_connection(api_base_url)
 
     st.sidebar.divider()
@@ -69,19 +70,27 @@ def _render_notion_connection() -> None:
             label_visibility="collapsed",
             placeholder="secret_...",
         )
-        new_page_id = st.text_input(
+        new_page_id_raw = st.text_input(
             "Parent page ID",
             value=page_id,
             key="_notion_page_id_input",
             label_visibility="collapsed",
-            placeholder="32-character page UUID",
+            placeholder="Notion page URL or page ID",
         )
         if new_token != token:
             st.session_state["notion_token"] = new_token
             st.rerun()
-        if new_page_id != page_id:
-            st.session_state["notion_parent_page_id"] = new_page_id
-            st.rerun()
+        if new_page_id_raw != page_id:
+            if new_page_id_raw.strip():
+                try:
+                    parsed_id = parse_notion_page_id(new_page_id_raw)
+                    st.session_state["notion_parent_page_id"] = parsed_id
+                    st.rerun()
+                except ValueError:
+                    st.error("Could not extract a Notion page ID. Paste a Notion URL or 32-char ID.")
+            else:
+                st.session_state["notion_parent_page_id"] = ""
+                st.rerun()
 
 
 def _render_linkedin_connection(api_base_url: str) -> None:
@@ -95,27 +104,15 @@ def _render_linkedin_connection(api_base_url: str) -> None:
                 st.session_state["linkedin_connected"] = False
                 st.rerun()
         else:
-            st.link_button(
-                "Connect LinkedIn",
-                url=f"{api_base_url}/auth/linkedin/start",
+            oauth_url = f"{api_base_url}/auth/linkedin/start"
+            st.markdown(
+                f'<a href="{oauth_url}" target="_self" '
+                f'style="display:inline-block;padding:0.4rem 1rem;'
+                f'background-color:#0a66c2;color:white;border-radius:0.5rem;'
+                f'text-decoration:none;font-weight:600;text-align:center;">'
+                f'Connect LinkedIn</a>',
+                unsafe_allow_html=True,
             )
             st.caption("You will be redirected to LinkedIn to authorise and then returned here.")
 
 
-def _render_medium_token() -> None:
-    token = st.session_state.get("medium_token", "")
-    connected = bool(token)
-    label = "Medium" + (" (connected)" if connected else "")
-    with st.sidebar.expander(label, expanded=False):
-        st.caption("Optional — publish to Medium. Get your token at "
-                   "medium.com/me/settings/security under 'Integration tokens'.")
-        new_token = st.text_input(
-            "Medium integration token",
-            value=token,
-            type="password",
-            key="_medium_token_input",
-            label_visibility="collapsed",
-        )
-        if new_token != token:
-            st.session_state["medium_token"] = new_token
-            st.rerun()

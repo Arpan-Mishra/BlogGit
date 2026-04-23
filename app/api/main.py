@@ -35,7 +35,7 @@ configure_logging(debug=_settings.debug)
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="Blog Copilot API",
+    title="BlogGit API",
     description="AI assistant that converts GitHub repos into published blog posts.",
     version="0.1.0",
 )

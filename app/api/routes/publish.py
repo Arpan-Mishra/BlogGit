@@ -11,7 +11,6 @@ Endpoints:
 """
 
 import logging
-from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -60,6 +59,7 @@ class MediumAdaptResponse(BaseModel):
 
 class LinkedInGenerateRequest(BaseModel):
     session_id: str
+    custom_instructions: str = ""
 
 
 class LinkedInGenerateResponse(BaseModel):
@@ -206,7 +206,7 @@ async def generate_linkedin_content(
     _require_draft(state, body.session_id)
 
     llm = _make_drafting_llm(settings)
-    node = make_linkedin_publisher_node(llm)
+    node = make_linkedin_publisher_node(llm, custom_instructions=body.custom_instructions)
 
     try:
         update = await node(state)

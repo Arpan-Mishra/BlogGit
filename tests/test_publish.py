@@ -180,7 +180,7 @@ class TestMediumPublisherNode:
         assert len(result["messages"]) == 1
 
     @pytest.mark.asyncio
-    async def test_strips_headings_and_mermaid_from_llm_content(self) -> None:
+    async def test_strips_headings_from_llm_content(self) -> None:
         import json
         from app.agent.nodes import make_medium_publisher_node
 
@@ -188,10 +188,7 @@ class TestMediumPublisherNode:
             "# Title\n\n"
             "## Introduction\n\n"
             "Some text.\n\n"
-            "```mermaid\n"
-            "flowchart LR\n"
-            "    A[Service] --> B[Database]\n"
-            "```\n\n"
+            "![Diagram](https://mermaid.ink/img/abc123)\n\n"
             "### Details\n\nMore text."
         )
         payload = {"title": "T", "subtitle": "S", "tags": [], "content": raw_content}
@@ -206,9 +203,31 @@ class TestMediumPublisherNode:
         adapted = result["medium_markdown"]
         assert "## " not in adapted
         assert "### " not in adapted
-        assert "```mermaid" not in adapted
-        assert "flowchart" not in adapted
-        assert "> *" in adapted  # replaced with blockquote
+        assert "![Diagram](https://mermaid.ink/img/abc123)" in adapted
+
+    @pytest.mark.asyncio
+    async def test_pre_renders_mermaid_before_llm_call(self) -> None:
+        import json
+        from app.agent.nodes import make_medium_publisher_node
+
+        payload = {"title": "T", "subtitle": "S", "tags": [], "content": "Adapted."}
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(
+            return_value=self._make_llm_response(json.dumps(payload))
+        )
+
+        state = _make_state()
+        state["current_draft"] = (
+            "Intro.\n\n"
+            "```mermaid\ngraph LR\n  A-->B\n```\n\n"
+            "End."
+        )
+        node = make_medium_publisher_node(mock_llm)
+        await node(state)
+
+        prompt_sent = mock_llm.ainvoke.call_args[0][0]
+        assert "```mermaid" not in prompt_sent
+        assert "mermaid.ink" in prompt_sent
 
     @pytest.mark.asyncio
     async def test_falls_back_to_adapted_original_draft_on_invalid_json(self) -> None:
@@ -303,6 +322,44 @@ class TestLinkedInPublisherNode:
 
         assert result["linkedin_post"] == raw
         assert result["outreach_dm"] == ""
+
+    @pytest.mark.asyncio
+    async def test_custom_instructions_appear_in_prompt(self) -> None:
+        import json
+        from app.agent.nodes import make_linkedin_publisher_node
+
+        payload = {
+            "post": "Custom post.",
+            "outreach_dm": "Hi {recipient_name}, custom DM.",
+        }
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(
+            return_value=self._make_llm_response(json.dumps(payload))
+        )
+
+        node = make_linkedin_publisher_node(mock_llm, custom_instructions="Focus on Python 3.12")
+        await node(_make_state())
+
+        prompt_sent = mock_llm.ainvoke.call_args[0][0]
+        assert "## Custom Instructions" in prompt_sent
+        assert "Focus on Python 3.12" in prompt_sent
+
+    @pytest.mark.asyncio
+    async def test_no_custom_instructions_section_when_empty(self) -> None:
+        import json
+        from app.agent.nodes import make_linkedin_publisher_node
+
+        payload = {"post": "Post.", "outreach_dm": "DM."}
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(
+            return_value=self._make_llm_response(json.dumps(payload))
+        )
+
+        node = make_linkedin_publisher_node(mock_llm, custom_instructions="")
+        await node(_make_state())
+
+        prompt_sent = mock_llm.ainvoke.call_args[0][0]
+        assert "## Custom Instructions" not in prompt_sent
 
     @pytest.mark.asyncio
     async def test_raises_when_draft_is_missing(self) -> None:
@@ -491,3 +548,41 @@ class TestLinkedInGenerateEndpoint:
         data = response.json()
         assert "linkedin_post" in data
         assert "outreach_dm" in data
+
+    def test_custom_instructions_passed_through(self, client: TestClient) -> None:
+        import json
+        from app.api.session_store import _sessions
+
+        session_id = "test-linkedin-custom"
+        _sessions[session_id] = _make_state()
+
+        mock_payload = json.dumps({
+            "post": "Custom post.",
+            "outreach_dm": "Hi {recipient_name}, custom!",
+        })
+
+        try:
+            with patch(
+                "app.api.routes.publish.ChatAnthropic",
+                autospec=True,
+            ) as mock_cls:
+                mock_instance = MagicMock()
+                mock_instance.ainvoke = AsyncMock(
+                    return_value=MagicMock(content=mock_payload)
+                )
+                mock_cls.return_value = mock_instance
+
+                response = client.post(
+                    "/publish/linkedin",
+                    json={
+                        "session_id": session_id,
+                        "custom_instructions": "Keep it casual",
+                    },
+                )
+
+                prompt_sent = mock_instance.ainvoke.call_args[0][0]
+                assert "Keep it casual" in prompt_sent
+        finally:
+            _sessions.pop(session_id, None)
+
+        assert response.status_code == 200

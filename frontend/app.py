@@ -1,5 +1,5 @@
 """
-Blog Copilot — Streamlit chat UI.
+BlogGit — Streamlit chat UI.
 
 Connects to the FastAPI /chat endpoint and streams responses via SSE.
 
@@ -144,7 +144,7 @@ def _init_session() -> None:
 
 
 def _render_sidebar() -> None:
-    st.sidebar.title("Blog Copilot")
+    st.sidebar.title("BlogGit")
     st.sidebar.caption("Turn your GitHub work into published blog posts.")
 
     # Repo URL input (only editable before session starts)
@@ -394,7 +394,7 @@ def _render_publish_panel() -> None:
 
         if not medium_markdown:
             if st.button("Adapt for Medium", key="btn_adapt_medium", type="primary"):
-                with st.spinner("Adapting draft for Medium..."):
+                with st.spinner("Adapting draft for Medium (rendering diagrams)..."):
                     result = _call_publish_api(
                         "medium",
                         {"session_id": st.session_state["session_id"]},
@@ -403,7 +403,8 @@ def _render_publish_panel() -> None:
                     st.session_state["medium_markdown"] = result.get("medium_markdown", "")
                     st.rerun()
         else:
-            st.success("Medium-ready content prepared.")
+            st.success("Medium-ready content prepared. All diagrams rendered as images.")
+            st.caption("Copy this content into Medium's editor — images will load automatically.")
             col_dl, col_reset = st.columns([3, 1])
             with col_dl:
                 st.download_button(
@@ -414,25 +415,40 @@ def _render_publish_panel() -> None:
                     key="btn_download_medium",
                 )
             with col_reset:
-                if st.button("Regenerate", key="btn_regen_medium"):
-                    st.session_state["medium_markdown"] = None
-                    st.rerun()
+                st.button(
+                    "Regenerate",
+                    key="btn_regen_medium",
+                    on_click=lambda: st.session_state.update({"medium_markdown": None}),
+                )
             with st.expander("Preview Medium content", expanded=False):
                 st.markdown(medium_markdown)
 
     # ------------------------------------------------------------------
     # LinkedIn tab
     # ------------------------------------------------------------------
+    def _clear_linkedin() -> None:
+        st.session_state["linkedin_post"] = None
+        st.session_state["outreach_dm"] = None
+
     with linkedin_tab:
         linkedin_post = st.session_state.get("linkedin_post")
         outreach_dm = st.session_state.get("outreach_dm")
 
         if not linkedin_post:
+            custom_instructions = st.text_area(
+                "Custom instructions (optional)",
+                placeholder="e.g., Focus on performance gains, mention Python 3.12, keep it casual...",
+                key="linkedin_custom_instructions",
+                height=80,
+            )
             if st.button("Generate LinkedIn content", key="btn_gen_linkedin", type="primary"):
                 with st.spinner("Generating LinkedIn post and outreach DM..."):
                     result = _call_publish_api(
                         "linkedin",
-                        {"session_id": st.session_state["session_id"]},
+                        {
+                            "session_id": st.session_state["session_id"],
+                            "custom_instructions": custom_instructions or "",
+                        },
                     )
                 if result:
                     st.session_state["linkedin_post"] = result.get("linkedin_post", "")
@@ -441,10 +457,7 @@ def _render_publish_panel() -> None:
         else:
             col_post, col_regen = st.columns([3, 1])
             with col_regen:
-                if st.button("Regenerate", key="btn_regen_linkedin"):
-                    st.session_state["linkedin_post"] = None
-                    st.session_state["outreach_dm"] = None
-                    st.rerun()
+                st.button("Regenerate", key="btn_regen_linkedin", on_click=_clear_linkedin)
 
             st.markdown("**LinkedIn Post**")
             st.text_area(
@@ -478,7 +491,7 @@ def _render_publish_panel() -> None:
 
 def main() -> None:
     st.set_page_config(
-        page_title="Blog Copilot",
+        page_title="BlogGit",
         page_icon="",
         layout="wide",
     )
@@ -494,7 +507,7 @@ def main() -> None:
 
     _render_sidebar()
 
-    st.title("Blog Copilot")
+    st.title("BlogGit")
     st.caption("Tell me about your project and I'll help write a blog post.")
 
     if not st.session_state["repo_url_submitted"]:

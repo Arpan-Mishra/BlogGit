@@ -550,7 +550,9 @@ _MAX_TOOL_ITERATIONS = 5
 
 
 def make_drafting_node(
-    llm: Any, search_tool: Any | None = None
+    llm: Any,
+    search_tool: Any | None = None,
+    image_tool: Any | None = None,
 ) -> Callable[[BlogState], Awaitable[dict[str, Any]]]:
     """Return an async LangGraph node function for blog post drafting.
 
@@ -564,6 +566,9 @@ def make_drafting_node(
         LLM is bound to it and may call it to look up articles or context for
         topics mentioned in the repository or requested via intake answers.
         The tool-calling loop runs at most ``_MAX_TOOL_ITERATIONS`` times.
+    image_tool:
+        Optional image search tool (e.g. Unsplash). When provided the LLM
+        may call it to find relevant images to embed in the draft.
 
     Returns
     -------
@@ -594,8 +599,9 @@ def make_drafting_node(
 
         logger.info("Drafting blog post for repo: %s", state.get("repo_url", "unknown"))
 
-        if search_tool is not None:
-            draft_text = await _draft_with_search(llm=llm, search_tool=search_tool, prompt=prompt)
+        tools = [t for t in [search_tool, image_tool] if t is not None]
+        if tools:
+            draft_text = await _draft_with_tools(llm=llm, tools=tools, prompt=prompt)
         else:
             response = await llm.ainvoke(prompt)
             draft_text = response.content if hasattr(response, "content") else str(response)
@@ -615,11 +621,12 @@ def make_drafting_node(
     return drafting_node
 
 
-async def _draft_with_search(*, llm: Any, search_tool: Any, prompt: str) -> str:
-    """Run the tool-calling loop: let the LLM call the search tool up to
+async def _draft_with_tools(*, llm: Any, tools: list[Any], prompt: str) -> str:
+    """Run the tool-calling loop: let the LLM call bound tools up to
     ``_MAX_TOOL_ITERATIONS`` times, then return its final text response.
     """
-    llm_with_tools = llm.bind_tools([search_tool])
+    tool_map = {getattr(t, "name", str(i)): t for i, t in enumerate(tools)}
+    llm_with_tools = llm.bind_tools(tools)
     messages: list = [HumanMessage(content=prompt)]
     response: Any = None
 
@@ -632,10 +639,12 @@ async def _draft_with_search(*, llm: Any, search_tool: Any, prompt: str) -> str:
             break
 
         for tool_call in tool_calls:
-            logger.info("Drafting: search query=%r", tool_call.get("args", {}).get("query", ""))
+            tool_name = tool_call.get("name", "")
+            query = tool_call.get("args", {}).get("query", "")
+            logger.info("Drafting: tool=%r query=%r", tool_name, query)
+            tool = tool_map.get(tool_name, tools[0])
             try:
-                raw = await search_tool.ainvoke(tool_call["args"])
-                # TavilySearch returns a dict with a "results" list; flatten to text
+                raw = await tool.ainvoke(tool_call["args"])
                 if isinstance(raw, dict) and "results" in raw:
                     articles = raw["results"]
                     content = "\n\n".join(
@@ -645,8 +654,8 @@ async def _draft_with_search(*, llm: Any, search_tool: Any, prompt: str) -> str:
                 else:
                     content = str(raw)
             except Exception as exc:
-                logger.warning("Search tool error: %s", exc)
-                content = f"(search failed: {exc})"
+                logger.warning("Tool %r error: %s", tool_name, exc)
+                content = f"(tool call failed: {exc})"
             messages.append(
                 ToolMessage(content=content, tool_call_id=tool_call["id"])
             )
@@ -896,8 +905,11 @@ def make_medium_publisher_node(
         if not current_draft:
             raise ValueError("current_draft is required in state to run medium_publisher node")
 
+        from app.tools.mermaid_render import replace_mermaid_with_images
+
+        preprocessed_draft = replace_mermaid_with_images(current_draft)
         system_prompt = (_PROMPTS_DIR / "medium.md").read_text()
-        prompt = f"{system_prompt}\n\n## Blog Post\n\n{current_draft}\n\nAdapt the post now."
+        prompt = f"{system_prompt}\n\n## Blog Post\n\n{preprocessed_draft}\n\nAdapt the post now."
 
         logger.info("Adapting draft for Medium (%d chars)", len(current_draft))
         response = await llm.ainvoke(prompt)
@@ -948,6 +960,7 @@ def make_medium_publisher_node(
 
 def make_linkedin_publisher_node(
     llm: Any,
+    custom_instructions: str = "",
 ) -> Callable[[BlogState], Awaitable[dict[str, Any]]]:
     """Return an async LangGraph node function for generating LinkedIn content.
 
@@ -971,7 +984,10 @@ def make_linkedin_publisher_node(
             raise ValueError("current_draft is required in state to run linkedin_publisher node")
 
         system_prompt = (_PROMPTS_DIR / "linkedin.md").read_text()
-        prompt = f"{system_prompt}\n\n## Blog Post\n\n{current_draft}\n\nGenerate the LinkedIn content now."
+        prompt = f"{system_prompt}\n\n## Blog Post\n\n{current_draft}"
+        if custom_instructions:
+            prompt += f"\n\n## Custom Instructions\n\n{custom_instructions}"
+        prompt += "\n\nGenerate the LinkedIn content now."
 
         logger.info("Generating LinkedIn content for draft (%d chars)", len(current_draft))
         response = await llm.ainvoke(prompt)

@@ -88,6 +88,20 @@ def _divider_block() -> dict:
     return {"object": "block", "type": "divider", "divider": {}}
 
 
+def _image_block(url: str, caption: str = "") -> dict:
+    """Return a Notion image block for an external URL."""
+    cap_rt = _rich_text(caption) if caption else []
+    return {
+        "object": "block",
+        "type": "image",
+        "image": {
+            "type": "external",
+            "external": {"url": url},
+            "caption": cap_rt,
+        },
+    }
+
+
 def _code_block(code: str, language: str) -> list[dict]:
     """Return one or more code blocks (Notion code blocks have a char limit)."""
     lang = language.lower().strip() if language else "plain text"
@@ -140,6 +154,13 @@ def markdown_to_notion_blocks(content: str) -> list[dict]:
 
     while i < len(lines):
         line = lines[i]
+
+        # --- Image markdown ---
+        image_match = re.match(r'^!\[([^\]]*)\]\(([^)]+)\)', line.strip())
+        if image_match:
+            blocks.append(_image_block(image_match.group(2), image_match.group(1)))
+            i += 1
+            continue
 
         # --- Fenced code block ---
         if line.startswith("```"):
@@ -209,6 +230,19 @@ def _headers(token: str) -> dict[str, str]:
         "Notion-Version": _NOTION_VERSION,
         "Content-Type": "application/json",
     }
+
+
+def parse_notion_page_id(raw: str) -> str:
+    """Extract a 32-char hex page ID from a Notion URL or raw UUID."""
+    cleaned = raw.strip().split("?")[0]
+    # For URLs, take the last path segment (contains the ID)
+    segment = cleaned.rsplit("/", 1)[-1]
+    no_dashes = segment.replace("-", "")
+    # The page ID is always the trailing 32 hex chars
+    match = re.search(r"[a-f0-9]{32}$", no_dashes)
+    if not match:
+        raise ValueError(f"Cannot extract Notion page ID from: {raw!r}")
+    return match.group(0)
 
 
 def _normalise_page_id(page_id: str) -> str:

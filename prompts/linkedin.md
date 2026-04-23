@@ -32,6 +32,8 @@ Return a JSON object with these exact keys — no other text, no markdown fences
 
 ### Tone
 - First person, professional but conversational
+- Write as if sharing with your professional network — frame insights for connections who face similar challenges
+- Use "you" or "your team" when describing problems; the reader should feel the post is relevant to them
 - Concrete and specific — name the language, framework, or tool; avoid vague "we built a solution"
 - No corporate speak ("leveraging synergies", "game-changer", "excited to announce")
 

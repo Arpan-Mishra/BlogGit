@@ -60,6 +60,12 @@ class Settings(BaseSettings):
         description="Tavily API key for web search during drafting. Optional — drafting works without it.",
     )
 
+    # Unsplash (optional — enables image search during drafting)
+    unsplash_access_key: str | None = Field(
+        default=None,
+        description="Unsplash API access key for image search during drafting. Optional.",
+    )
+
     # App
     app_secret_key: SecretStr = Field(..., description="Secret key for signing cookies/sessions")
     app_base_url: str = Field(

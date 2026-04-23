@@ -184,6 +184,36 @@ class TestMarkdownToNotionBlocks:
         assert "bulleted_list_item" in types
         assert "code" in types
 
+    def test_image_markdown_to_block(self) -> None:
+        from app.tools.notion_mcp import markdown_to_notion_blocks
+
+        md = "![A sunset over mountains](https://images.unsplash.com/photo-123)"
+        blocks = markdown_to_notion_blocks(md)
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "image"
+        assert blocks[0]["image"]["type"] == "external"
+        assert blocks[0]["image"]["external"]["url"] == "https://images.unsplash.com/photo-123"
+        assert blocks[0]["image"]["caption"][0]["text"]["content"] == "A sunset over mountains"
+
+    def test_image_with_empty_caption(self) -> None:
+        from app.tools.notion_mcp import markdown_to_notion_blocks
+
+        md = "![](https://example.com/img.png)"
+        blocks = markdown_to_notion_blocks(md)
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "image"
+        assert blocks[0]["image"]["caption"] == []
+
+    def test_mixed_content_with_images(self) -> None:
+        from app.tools.notion_mcp import markdown_to_notion_blocks
+
+        md = "## Section\n\nSome text.\n\n![Diagram](https://example.com/diagram.png)\n\nMore text."
+        blocks = markdown_to_notion_blocks(md)
+        types = [b["type"] for b in blocks]
+        assert "heading_2" in types
+        assert "paragraph" in types
+        assert "image" in types
+
     def test_all_blocks_have_object_block(self) -> None:
         from app.tools.notion_mcp import markdown_to_notion_blocks
 
@@ -327,3 +357,67 @@ class TestCreateNotionPage:
             )
 
         assert mock_client.patch.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# parse_notion_page_id
+# ---------------------------------------------------------------------------
+
+
+class TestParseNotionPageId:
+    def test_raw_hex_uuid(self) -> None:
+        from app.tools.notion_mcp import parse_notion_page_id
+
+        result = parse_notion_page_id("0ad940672ce24a7698d5dbf186c2cc83")
+        assert result == "0ad940672ce24a7698d5dbf186c2cc83"
+
+    def test_dashed_uuid(self) -> None:
+        from app.tools.notion_mcp import parse_notion_page_id
+
+        result = parse_notion_page_id("0ad94067-2ce2-4a76-98d5-dbf186c2cc83")
+        assert result == "0ad940672ce24a7698d5dbf186c2cc83"
+
+    def test_url_with_title(self) -> None:
+        from app.tools.notion_mcp import parse_notion_page_id
+
+        url = "https://www.notion.so/BlogGit-0ad940672ce24a7698d5dbf186c2cc83?source=copy_link"
+        result = parse_notion_page_id(url)
+        assert result == "0ad940672ce24a7698d5dbf186c2cc83"
+
+    def test_url_with_view_param(self) -> None:
+        from app.tools.notion_mcp import parse_notion_page_id
+
+        url = "https://www.notion.so/76ab3f7b8991423ebe16246d0f0c5327?v=8aefoo"
+        result = parse_notion_page_id(url)
+        assert result == "76ab3f7b8991423ebe16246d0f0c5327"
+
+    def test_url_with_workspace_prefix(self) -> None:
+        from app.tools.notion_mcp import parse_notion_page_id
+
+        url = "https://www.notion.so/myworkspace/Page-Title-0ad940672ce24a7698d5dbf186c2cc83"
+        result = parse_notion_page_id(url)
+        assert result == "0ad940672ce24a7698d5dbf186c2cc83"
+
+    def test_whitespace_stripped(self) -> None:
+        from app.tools.notion_mcp import parse_notion_page_id
+
+        result = parse_notion_page_id("  0ad940672ce24a7698d5dbf186c2cc83  ")
+        assert result == "0ad940672ce24a7698d5dbf186c2cc83"
+
+    def test_invalid_raises(self) -> None:
+        from app.tools.notion_mcp import parse_notion_page_id
+
+        with pytest.raises(ValueError, match="Cannot extract Notion page ID"):
+            parse_notion_page_id("not-a-valid-id")
+
+    def test_empty_string_raises(self) -> None:
+        from app.tools.notion_mcp import parse_notion_page_id
+
+        with pytest.raises(ValueError):
+            parse_notion_page_id("")
+
+    def test_short_hex_raises(self) -> None:
+        from app.tools.notion_mcp import parse_notion_page_id
+
+        with pytest.raises(ValueError):
+            parse_notion_page_id("abc123")

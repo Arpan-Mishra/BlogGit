@@ -51,6 +51,16 @@ flowchart LR
     C --> D[Database]
 ```
 
+## Images
+
+When the image_search tool is available, use it to find 1-3 relevant images that illustrate key concepts in the post. Embed each using this format:
+
+```
+![Description -- Source: Unsplash, Photo by Photographer Name](url)
+```
+
+Place images after the paragraph they illustrate. Include all image sources in the References section.
+
 ## References
 
 Every draft must end with a `## References` section listing all external URLs consulted during research and any user-provided citation URLs. Format as a numbered markdown list:

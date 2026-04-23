@@ -11,7 +11,13 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from app.agent.nodes import make_drafting_node, make_intake_node, make_outline_node, make_repo_analyzer_node, make_revision_node
+from app.agent.nodes import (
+    make_drafting_node,
+    make_intake_node,
+    make_outline_node,
+    make_repo_analyzer_node,
+    make_revision_node,
+)
 from app.agent.state import BlogState
 
 logger = logging.getLogger(__name__)
@@ -72,6 +78,7 @@ def build_graph(
     repo_llm: Any,
     drafting_llm: Any,
     search_tool: Any = None,
+    image_tool: Any = None,
     checkpointer: Any = None,
 ) -> Any:
     """Build and compile the Blog Copilot LangGraph StateGraph.
@@ -88,6 +95,9 @@ def build_graph(
         Optional web search tool (e.g. TavilySearchResults). When provided,
         the drafting node may call it to look up articles on topics from the
         repo or requested via intake answers.
+    image_tool:
+        Optional image search tool (e.g. Unsplash). When provided, the
+        drafting node may call it to find relevant images to embed.
     checkpointer:
         Optional LangGraph checkpointer for persistent state. Pass None
         for in-memory (stateless) operation.
@@ -101,7 +111,10 @@ def build_graph(
     graph.add_node("repo_analyzer", make_repo_analyzer_node(tools=tools, llm=repo_llm))
     graph.add_node("intake", make_intake_node())
     graph.add_node("outline", make_outline_node(llm=drafting_llm))
-    graph.add_node("drafting", make_drafting_node(llm=drafting_llm, search_tool=search_tool))
+    graph.add_node(
+        "drafting",
+        make_drafting_node(llm=drafting_llm, search_tool=search_tool, image_tool=image_tool),
+    )
     graph.add_node("revision", make_revision_node(llm=drafting_llm))
 
     graph.add_conditional_edges(

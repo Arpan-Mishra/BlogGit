@@ -30,18 +30,8 @@ Return a JSON object with these exact keys — no other text, no markdown fences
 ### Content Format
 - Keep the full blog post content intact; do not shorten it
 
-**Mermaid diagrams (CRITICAL):** Any block that starts with ` ```mermaid ` and ends with ` ``` ` must be completely removed and replaced with a plain italic blockquote describing what the diagram shows. Example:
-
-  Input:
-  ` ```mermaid `
-  flowchart LR
-      A[User] --> B[API] --> C[DB]
-  ` ``` `
-
-  Output:
-  > *Architecture: User requests flow through the API layer into the database.*
-
-  Do NOT leave any mermaid fences, mermaid keywords, or flowchart syntax in the output.
+- Mermaid diagrams are pre-rendered as image URLs (`![Diagram](https://mermaid.ink/...)`). Preserve them as-is in the output.
+- All other images (`![...](url)`) should be preserved unchanged.
 
 **Headings:** Medium's editor does not render Markdown heading syntax (`#`, `##`, `###`) when pasting. Convert headings as follows:
   - `# Title` → keep as-is (used as the story title)
