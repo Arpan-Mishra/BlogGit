@@ -8,9 +8,21 @@ In v1 the connection state is read from the FastAPI backend via a simple
 status endpoint. Buttons trigger the OAuth redirect flow.
 """
 
+import re
+
 import streamlit as st
 
-from app.tools.notion_mcp import parse_notion_page_id
+
+def _parse_notion_page_id(raw: str) -> str:
+    """Extract a 32-char hex page ID from a Notion URL or raw UUID."""
+    cleaned = raw.strip().split("?")[0]
+    segment = cleaned.rsplit("/", 1)[-1]
+    no_dashes = segment.replace("-", "")
+    match = re.search(r"[a-f0-9]{32}$", no_dashes)
+    if not match:
+        raise ValueError(f"Cannot extract Notion page ID from: {raw!r}")
+    return match.group(0)
+
 
 def render_connections(api_base_url: str, github_token_key: str = "github_token") -> None:
     """Render connection status cards in the Streamlit sidebar.
@@ -83,7 +95,7 @@ def _render_notion_connection() -> None:
         if new_page_id_raw != page_id:
             if new_page_id_raw.strip():
                 try:
-                    parsed_id = parse_notion_page_id(new_page_id_raw)
+                    parsed_id = _parse_notion_page_id(new_page_id_raw)
                     st.session_state["notion_parent_page_id"] = parsed_id
                     st.rerun()
                 except ValueError:
