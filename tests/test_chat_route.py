@@ -145,17 +145,18 @@ class TestStreamingEvents:
             _sessions.clear()
 
             async def _fake_astream(state, *, stream_mode=None, version=None):
-                msg_chunk = MagicMock()
-                msg_chunk.content = "Hello world"
-                msg_chunk.tool_calls = []
+                from langchain_core.messages import AIMessageChunk
+
+                msg_chunk = AIMessageChunk(content="Hello world")
                 yield {
                     "type": "messages",
                     "data": (msg_chunk, {"langgraph_node": "intake"}),
                 }
 
-                tool_chunk = MagicMock()
-                tool_chunk.content = ""
-                tool_chunk.tool_calls = [{"name": "tavily_search"}]
+                tool_chunk = AIMessageChunk(
+                    content="",
+                    tool_calls=[{"name": "tavily_search", "args": {}, "id": "tc1"}],
+                )
                 yield {
                     "type": "messages",
                     "data": (tool_chunk, {"langgraph_node": "drafting"}),

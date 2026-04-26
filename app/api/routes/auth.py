@@ -49,6 +49,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 _STATE_COOKIE = "oauth_state"
 _POPUP_COOKIE = "oauth_popup"
+_USER_ID_COOKIE = "oauth_user_id"
 
 _OAUTH_SUCCESS_HTML = """\
 <!DOCTYPE html>
@@ -109,6 +110,7 @@ async def auth_status(
 async def auth_start(
     provider: str,
     popup: Annotated[bool, Query()] = False,
+    user_id: Annotated[str, Query()] = "anonymous",
     settings: Settings = Depends(get_settings),
 ) -> RedirectResponse:
     """Redirect the user to the OAuth provider's authorization page."""
@@ -137,6 +139,14 @@ async def auth_start(
             secure=is_secure,
             max_age=600,
         )
+    response.set_cookie(
+        key=_USER_ID_COOKIE,
+        value=user_id,
+        httponly=True,
+        samesite="lax",
+        secure=is_secure,
+        max_age=600,
+    )
     return response
 
 
@@ -147,13 +157,11 @@ async def auth_callback(
     code: Annotated[str | None, Query()] = None,
     state: Annotated[str | None, Query()] = None,
     error: Annotated[str | None, Query()] = None,
-    user_id: str = Depends(get_optional_user),
     settings: Settings = Depends(get_settings),
     kek: str = Depends(get_kek),
     oauth_repo: SupabaseOAuthConnectionRepository = Depends(get_oauth_repo),
 ) -> RedirectResponse:
     """Handle the provider callback: validate CSRF, exchange code, persist tokens."""
-    # Provider-level error (e.g. user denied access)
     if error:
         raise HTTPException(status_code=400, detail=f"OAuth provider error: {error}")
 
@@ -166,6 +174,9 @@ async def auth_callback(
         validate_state(expected=stored_state or "", actual=state or "")
     except OAuthStateError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # User ID passed through cookie from auth_start (browser redirect has no JWT)
+    user_id = request.cookies.get(_USER_ID_COOKIE, "anonymous")
 
     # Exchange code for tokens
     try:
@@ -193,6 +204,7 @@ async def auth_callback(
 
     response = RedirectResponse(url=redirect_url, status_code=302)
     response.delete_cookie(key=_STATE_COOKIE)
+    response.delete_cookie(key=_USER_ID_COOKIE)
     if is_popup:
         response.delete_cookie(key=_POPUP_COOKIE)
     return response

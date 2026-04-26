@@ -118,7 +118,8 @@ def _render_linkedin_connection(api_base_url: str) -> None:
                 st.session_state["linkedin_connected"] = False
                 st.rerun()
         else:
-            oauth_url = f"{api_base_url}/auth/linkedin/start?popup=true"
+            user_id = st.session_state.get("user_id", "anonymous")
+            oauth_url = f"{api_base_url}/auth/linkedin/start?popup=true&user_id={user_id}"
             components.html(
                 f"""
                 <button onclick="window.open('{oauth_url}','oauth_popup',
@@ -131,11 +132,12 @@ def _render_linkedin_connection(api_base_url: str) -> None:
             )
             st.caption("A popup will open for LinkedIn authorization. This page stays intact.")
             if st.button("Check connection", key="_linkedin_check"):
-                user_id = st.session_state.get("user_id", "anonymous")
+                auth_token = st.session_state.get("auth_token")
+                headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
                 try:
                     resp = requests.get(
                         f"{api_base_url}/auth/linkedin/status",
-                        params={"user_id": user_id},
+                        headers=headers,
                         timeout=5,
                     )
                     if resp.ok and resp.json().get("connected"):

@@ -22,7 +22,7 @@ from typing import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -47,6 +47,8 @@ _NODE_STATUS: dict[str, str] = {
     "drafting": "Writing draft...",
     "revision": "Revising draft...",
 }
+
+_STREAM_TOKEN_NODES: set[str] = {"intake", "drafting", "revision", "outline"}
 
 
 # ---------------------------------------------------------------------------
@@ -220,9 +222,8 @@ async def chat(
                             logger.info("graph node started: %s", node_name)
                             yield {"event": "status", "data": status}
 
-                    content = getattr(msg, "content", "")
-                    if content:
-                        yield {"event": "token", "data": content}
+                    if not isinstance(msg, AIMessageChunk):
+                        continue
 
                     tool_calls = getattr(msg, "tool_calls", None) or []
                     for tc in tool_calls:
@@ -233,6 +234,10 @@ async def chat(
                                 "node": node_name,
                             }),
                         }
+
+                    content = getattr(msg, "content", "")
+                    if content and not tool_calls and node_name in _STREAM_TOKEN_NODES:
+                        yield {"event": "token", "data": content}
 
                 elif chunk_type == "updates":
                     for node_name, node_output in chunk["data"].items():
