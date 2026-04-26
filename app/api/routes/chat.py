@@ -6,8 +6,16 @@ Architecture (Sprint 4):
   - Each POST /chat invocation appends the user message, runs the graph,
     and streams new AIMessages back as SSE events.
   - A new session is initialised on first message; repo_url is required then.
+
+Streaming (Sprint 9):
+  - Uses stream_mode=["messages", "updates"] with version="v2" for
+    token-level streaming plus node-level state updates.
+  - Emits "token" events for each LLM token chunk.
+  - Emits "tool_start" events when a tool call is detected.
+  - Emits "status" events on node transitions.
 """
 
+import json
 import logging
 import os
 from typing import AsyncGenerator
@@ -192,17 +200,44 @@ async def chat(
     graph = _build_graph_for_request(body, settings)
 
     async def _event_generator() -> AsyncGenerator[dict, None]:
-        # Accumulate partial state updates streamed from each node.
-        # stream_mode="updates" yields {node_name: partial_state_dict} per step.
         accumulated: dict = dict(state)
+        emitted_nodes: set[str] = set()
         try:
-            async for chunk in graph.astream(state, stream_mode="updates"):
-                for node_name, node_output in chunk.items():
-                    status = _NODE_STATUS.get(node_name)
-                    if status:
-                        logger.info("graph node started: %s", node_name)
-                        yield {"event": "status", "data": status}
-                    accumulated.update(node_output)
+            async for chunk in graph.astream(
+                state,
+                stream_mode=["messages", "updates"],
+                version="v2",
+            ):
+                chunk_type = chunk.get("type")
+                if chunk_type == "messages":
+                    msg, metadata = chunk["data"]
+                    node_name = metadata.get("langgraph_node", "")
+
+                    if node_name and node_name not in emitted_nodes:
+                        status = _NODE_STATUS.get(node_name)
+                        if status:
+                            emitted_nodes.add(node_name)
+                            logger.info("graph node started: %s", node_name)
+                            yield {"event": "status", "data": status}
+
+                    content = getattr(msg, "content", "")
+                    if content:
+                        yield {"event": "token", "data": content}
+
+                    tool_calls = getattr(msg, "tool_calls", None) or []
+                    for tc in tool_calls:
+                        yield {
+                            "event": "tool_start",
+                            "data": json.dumps({
+                                "tool_name": tc.get("name", ""),
+                                "node": node_name,
+                            }),
+                        }
+
+                elif chunk_type == "updates":
+                    for node_name, node_output in chunk["data"].items():
+                        if isinstance(node_output, dict):
+                            accumulated.update(node_output)
         except Exception as exc:
             logger.exception("graph.astream failed: %s", exc)
             yield {"event": "error", "data": str(exc)}
@@ -215,7 +250,6 @@ async def chat(
             if isinstance(msg, AIMessage):
                 yield {"event": "message", "data": msg.content}
 
-        # Signal stream end
         phase = accumulated.get("phase", "")
         yield {"event": "done", "data": phase}
 

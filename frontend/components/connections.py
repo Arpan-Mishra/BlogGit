@@ -10,7 +10,9 @@ status endpoint. Buttons trigger the OAuth redirect flow.
 
 import re
 
+import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 def _parse_notion_page_id(raw: str) -> str:
@@ -116,15 +118,32 @@ def _render_linkedin_connection(api_base_url: str) -> None:
                 st.session_state["linkedin_connected"] = False
                 st.rerun()
         else:
-            oauth_url = f"{api_base_url}/auth/linkedin/start"
-            st.markdown(
-                f'<a href="{oauth_url}" target="_self" '
-                f'style="display:inline-block;padding:0.4rem 1rem;'
-                f'background-color:#0a66c2;color:white;border-radius:0.5rem;'
-                f'text-decoration:none;font-weight:600;text-align:center;">'
-                f'Connect LinkedIn</a>',
-                unsafe_allow_html=True,
+            oauth_url = f"{api_base_url}/auth/linkedin/start?popup=true"
+            components.html(
+                f"""
+                <button onclick="window.open('{oauth_url}','oauth_popup',
+                'width=600,height=700,scrollbars=yes')"
+                style="padding:0.4rem 1rem;background-color:#0a66c2;color:white;
+                border-radius:0.5rem;border:none;font-weight:600;cursor:pointer;
+                font-size:0.9rem;">Connect LinkedIn</button>
+                """,
+                height=50,
             )
-            st.caption("You will be redirected to LinkedIn to authorise and then returned here.")
+            st.caption("A popup will open for LinkedIn authorization. This page stays intact.")
+            if st.button("Check connection", key="_linkedin_check"):
+                user_id = st.session_state.get("user_id", "anonymous")
+                try:
+                    resp = requests.get(
+                        f"{api_base_url}/auth/linkedin/status",
+                        params={"user_id": user_id},
+                        timeout=5,
+                    )
+                    if resp.ok and resp.json().get("connected"):
+                        st.session_state["linkedin_connected"] = True
+                        st.rerun()
+                    else:
+                        st.info("Not connected yet. Complete the popup flow first.")
+                except requests.RequestException:
+                    st.error("Could not reach the server to check status.")
 
 

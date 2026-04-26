@@ -268,3 +268,158 @@ class TestMediumToken:
                 json={"token": "bad-token"},
             )
         assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# GET /auth/oauth-success
+# ---------------------------------------------------------------------------
+
+
+class TestOAuthSuccess:
+    def test_oauth_success_returns_html(self, client: TestClient) -> None:
+        response = client.get("/auth/oauth-success")
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+
+    def test_oauth_success_contains_auto_close(self, client: TestClient) -> None:
+        response = client.get("/auth/oauth-success")
+        assert "window.close()" in response.text
+
+    def test_oauth_success_contains_connected_message(self, client: TestClient) -> None:
+        response = client.get("/auth/oauth-success")
+        assert "Connected!" in response.text
+
+
+# ---------------------------------------------------------------------------
+# GET /auth/{provider}/status
+# ---------------------------------------------------------------------------
+
+
+class TestAuthStatus:
+    def test_status_returns_false_for_unknown_user(self, client: TestClient) -> None:
+        from app.api.dependencies import get_optional_user
+        from app.api.routes.auth import get_oauth_repo
+        from app.api.main import app
+
+        fake_repo = MagicMock()
+        fake_repo.get = MagicMock(return_value=None)
+
+        app.dependency_overrides[get_oauth_repo] = lambda: fake_repo
+        app.dependency_overrides[get_optional_user] = lambda: "unknown-user"
+        try:
+            response = client.get("/auth/linkedin/status")
+        finally:
+            app.dependency_overrides.pop(get_oauth_repo, None)
+            app.dependency_overrides.pop(get_optional_user, None)
+
+        assert response.status_code == 200
+        assert response.json() == {"connected": False}
+        fake_repo.get.assert_called_once_with(user_id="unknown-user", provider="linkedin")
+
+    def test_status_returns_true_for_connected_user(self, client: TestClient) -> None:
+        from app.api.dependencies import get_optional_user
+        from app.api.routes.auth import get_oauth_repo
+        from app.api.main import app
+
+        fake_repo = MagicMock()
+        fake_repo.get = MagicMock(return_value=MagicMock())
+
+        app.dependency_overrides[get_oauth_repo] = lambda: fake_repo
+        app.dependency_overrides[get_optional_user] = lambda: "connected-user"
+        try:
+            response = client.get("/auth/linkedin/status")
+        finally:
+            app.dependency_overrides.pop(get_oauth_repo, None)
+            app.dependency_overrides.pop(get_optional_user, None)
+
+        assert response.status_code == 200
+        assert response.json() == {"connected": True}
+
+    def test_status_defaults_to_anonymous_user(self, client: TestClient) -> None:
+        from app.api.dependencies import get_optional_user
+        from app.api.routes.auth import get_oauth_repo
+        from app.api.main import app
+
+        fake_repo = MagicMock()
+        fake_repo.get = MagicMock(return_value=None)
+
+        app.dependency_overrides[get_oauth_repo] = lambda: fake_repo
+        app.dependency_overrides[get_optional_user] = lambda: "anonymous"
+        try:
+            response = client.get("/auth/linkedin/status")
+        finally:
+            app.dependency_overrides.pop(get_oauth_repo, None)
+            app.dependency_overrides.pop(get_optional_user, None)
+
+        assert response.status_code == 200
+        fake_repo.get.assert_called_once_with(user_id="anonymous", provider="linkedin")
+
+
+# ---------------------------------------------------------------------------
+# Popup mode: /auth/{provider}/start?popup=true
+# ---------------------------------------------------------------------------
+
+
+class TestPopupMode:
+    def test_start_with_popup_sets_popup_cookie(self, client: TestClient) -> None:
+        response = client.get("/auth/github/start?popup=true")
+        assert response.status_code == 302
+        assert "oauth_popup" in response.cookies
+
+    def test_start_without_popup_no_popup_cookie(self, client: TestClient) -> None:
+        response = client.get("/auth/github/start")
+        assert response.status_code == 302
+        assert "oauth_popup" not in response.cookies
+
+    @pytest.mark.asyncio
+    async def test_callback_popup_redirects_to_success_page(self) -> None:
+        """With popup cookie set, callback redirects to /auth/oauth-success."""
+        from cryptography.fernet import Fernet
+        from httpx import ASGITransport, AsyncClient
+
+        from app.config import get_settings
+
+        fake_repo = MagicMock()
+        fake_repo.upsert = MagicMock()
+        valid_kek = Fernet.generate_key().decode()
+
+        with patch.dict(os.environ, _ENV, clear=True):
+            get_settings.cache_clear()
+            from app.api.main import app
+            from app.api.routes.auth import get_kek, get_oauth_repo
+
+            app.dependency_overrides[get_kek] = lambda: valid_kek
+            app.dependency_overrides[get_oauth_repo] = lambda: fake_repo
+
+            with patch(
+                "app.api.routes.auth.exchange_code",
+                new=AsyncMock(
+                    return_value=MagicMock(
+                        access_token="gho_faketoken",
+                        token_type="bearer",
+                        refresh_token=None,
+                        expires_in=None,
+                        scope="repo",
+                    )
+                ),
+            ):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as ac:
+                    start_resp = await ac.get(
+                        "/auth/github/start?popup=true", follow_redirects=False
+                    )
+                    state_cookie = start_resp.cookies.get("oauth_state")
+                    assert state_cookie is not None
+
+                    callback_resp = await ac.get(
+                        "/auth/github/callback",
+                        params={"code": "authcode", "state": state_cookie},
+                        follow_redirects=False,
+                    )
+                    assert callback_resp.status_code == 302
+                    location = callback_resp.headers["location"]
+                    assert "/auth/oauth-success" in location
+                    assert "connected=github" not in location
+
+            app.dependency_overrides.clear()
+            get_settings.cache_clear()

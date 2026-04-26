@@ -19,7 +19,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.api.limiter import limiter
-from app.api.routes import auth, chat, publish
+from app.api.routes import auth, chat, publish, user_auth
 from app.config import get_settings
 from app.logging_config import configure_logging
 
@@ -54,6 +54,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # ty
 app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(publish.router)
+app.include_router(user_auth.router)
 
 
 @app.get("/health")

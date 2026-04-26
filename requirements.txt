@@ -29,7 +29,7 @@ itsdangerous>=2.2.0
 supabase>=2.15.0
 
 # Config
-pydantic>=2.11.0
+pydantic[email]>=2.11.0
 pydantic-settings>=2.8.0
 python-dotenv>=1.1.0
 

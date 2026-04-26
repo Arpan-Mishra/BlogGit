@@ -13,6 +13,7 @@ Usage:
     streamlit run frontend/app.py
 """
 
+import json
 import logging
 import re
 import uuid
@@ -41,6 +42,109 @@ logger = logging.getLogger(__name__)
 
 import os
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
+
+
+# ---------------------------------------------------------------------------
+# Auth helpers
+# ---------------------------------------------------------------------------
+
+
+def _auth_headers() -> dict[str, str]:
+    """Return Authorization header dict if user is logged in, else empty."""
+    token = st.session_state.get("auth_token")
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    return {}
+
+
+def _load_user_connections() -> None:
+    """Fetch connection statuses from backend and update session state."""
+    try:
+        resp = requests.get(
+            f"{API_BASE_URL}/user/connections",
+            headers=_auth_headers(),
+            timeout=10,
+        )
+        if resp.ok:
+            for conn in resp.json().get("connections", []):
+                if conn["connected"]:
+                    st.session_state[f"{conn['provider']}_connected"] = True
+    except requests.exceptions.RequestException as exc:
+        logger.warning("Failed to load user connections: %s", exc)
+
+
+def _render_auth_page() -> None:
+    """Render a login/signup page when the user is not authenticated."""
+    st.title("BlogGit")
+    st.caption("Turn your GitHub work into published blog posts.")
+    st.markdown("---")
+
+    login_tab, signup_tab = st.tabs(["Login", "Sign Up"])
+
+    with login_tab:
+        with st.form("login_form"):
+            email = st.text_input("Email", key="login_email")
+            password = st.text_input("Password", type="password", key="login_password")
+            submitted = st.form_submit_button("Login", type="primary")
+
+        if submitted:
+            if not email or not password:
+                st.error("Please enter both email and password.")
+                return
+            try:
+                resp = requests.post(
+                    f"{API_BASE_URL}/user/login",
+                    json={"email": email, "password": password},
+                    timeout=10,
+                )
+                if resp.ok:
+                    data = resp.json()
+                    st.session_state["auth_token"] = data["access_token"]
+                    st.session_state["refresh_token"] = data["refresh_token"]
+                    st.session_state["user_id"] = data["user_id"]
+                    st.session_state["user_email"] = data["email"]
+                    _load_user_connections()
+                    st.rerun()
+                else:
+                    detail = resp.json().get("detail", "Login failed")
+                    st.error(detail)
+            except requests.exceptions.ConnectionError:
+                st.error("Cannot connect to the backend.")
+
+    with signup_tab:
+        with st.form("signup_form"):
+            email = st.text_input("Email", key="signup_email")
+            password = st.text_input(
+                "Password (min 8 characters)", type="password", key="signup_password"
+            )
+            submitted = st.form_submit_button("Sign Up", type="primary")
+
+        if submitted:
+            if not email or not password:
+                st.error("Please enter both email and password.")
+                return
+            if len(password) < 8:
+                st.error("Password must be at least 8 characters.")
+                return
+            try:
+                resp = requests.post(
+                    f"{API_BASE_URL}/user/signup",
+                    json={"email": email, "password": password},
+                    timeout=10,
+                )
+                if resp.ok:
+                    data = resp.json()
+                    st.session_state["auth_token"] = data["access_token"]
+                    st.session_state["refresh_token"] = data["refresh_token"]
+                    st.session_state["user_id"] = data["user_id"]
+                    st.session_state["user_email"] = data["email"]
+                    _load_user_connections()
+                    st.rerun()
+                else:
+                    detail = resp.json().get("detail", "Signup failed")
+                    st.error(detail)
+            except requests.exceptions.ConnectionError:
+                st.error("Cannot connect to the backend.")
 
 # ---------------------------------------------------------------------------
 # SSE helper
@@ -79,6 +183,7 @@ def _stream_chat(
         with requests.post(
             f"{API_BASE_URL}/chat",
             json=payload,
+            headers=_auth_headers(),
             stream=True,
             timeout=120,
         ) as resp:
@@ -143,9 +248,33 @@ def _init_session() -> None:
         st.session_state["outreach_dm"] = None
 
 
+def _handle_logout() -> None:
+    """Sign out the user and clear auth state."""
+    token = st.session_state.get("auth_token")
+    if token:
+        try:
+            requests.post(
+                f"{API_BASE_URL}/user/logout",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=5,
+            )
+        except requests.exceptions.RequestException as exc:
+            logger.warning("Logout request to backend failed: %s", exc)
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+
+
 def _render_sidebar() -> None:
     st.sidebar.title("BlogGit")
     st.sidebar.caption("Turn your GitHub work into published blog posts.")
+
+    user_email = st.session_state.get("user_email", "")
+    if user_email:
+        st.sidebar.markdown(f"Logged in as **{user_email}**")
+        if st.sidebar.button("Logout"):
+            _handle_logout()
+            st.rerun()
+        st.sidebar.markdown("---")
 
     # Repo URL input (only editable before session starts)
     if not st.session_state["repo_url_submitted"]:
@@ -214,11 +343,21 @@ def _handle_user_input(user_input: str) -> None:
             repo_url=repo_url,
             github_token=st.session_state.get("github_token"),
         ):
-            if event_type == "message":
+            if event_type == "token":
+                full_response += data
+                placeholder.markdown(full_response + "...")
+            elif event_type == "tool_start":
+                try:
+                    tool_info = json.loads(data)
+                    tool_name = tool_info.get("tool_name", "tool")
+                except (json.JSONDecodeError, TypeError):
+                    tool_name = "tool"
+                if not full_response:
+                    placeholder.markdown(f"*Using {tool_name}...*")
+            elif event_type == "message":
                 full_response += data
                 placeholder.markdown(full_response + " ")
             elif event_type == "status":
-                # Show a spinner-style status while no response content yet.
                 if not full_response:
                     placeholder.markdown(f"*{data}*")
             elif event_type == "done":
@@ -327,7 +466,12 @@ def _render_draft_panel() -> None:
 def _call_publish_api(endpoint: str, payload: dict) -> dict | None:
     """POST to a /publish/* endpoint; return JSON on success or None on error."""
     try:
-        resp = requests.post(f"{API_BASE_URL}/publish/{endpoint}", json=payload, timeout=60)
+        resp = requests.post(
+            f"{API_BASE_URL}/publish/{endpoint}",
+            json=payload,
+            headers=_auth_headers(),
+            timeout=60,
+        )
         resp.raise_for_status()
         return resp.json()
     except requests.exceptions.ConnectionError:
@@ -497,6 +641,10 @@ def main() -> None:
     )
 
     _init_session()
+
+    if "auth_token" not in st.session_state:
+        _render_auth_page()
+        return
 
     # Detect OAuth callback redirects (e.g. ?connected=linkedin after OAuth flow)
     _connected_provider = st.query_params.get("connected")

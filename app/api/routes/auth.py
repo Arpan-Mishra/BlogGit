@@ -9,6 +9,12 @@ GET  /auth/{provider}/callback
     — Validates the CSRF state, exchanges the authorization code for tokens,
       encrypts and persists the tokens, then redirects to the app home.
 
+GET  /auth/oauth-success
+    — Serves a minimal HTML page that auto-closes the popup window.
+
+GET  /auth/{provider}/status
+    — Returns whether a user has a stored connection for the provider.
+
 POST /auth/medium/token
     — Validates a Medium integration token, encrypts and persists it.
 """
@@ -18,10 +24,11 @@ from typing import Annotated, Any, cast
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from supabase import create_client
 
+from app.api.dependencies import get_optional_user
 from app.auth.encryption import encrypt_token, encrypt_token_or_none
 from app.auth.oauth import (
     OAuthError,
@@ -41,6 +48,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 _STATE_COOKIE = "oauth_state"
+_POPUP_COOKIE = "oauth_popup"
+
+_OAUTH_SUCCESS_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Connected</title></head>
+<body style="display:flex;align-items:center;justify-content:center;height:100vh;
+font-family:system-ui,sans-serif;background:#f8f9fa;">
+<div style="text-align:center;">
+<h2 style="color:#1a7f37;">Connected!</h2>
+<p>You can close this window.</p>
+</div>
+<script>setTimeout(function(){window.close();},1500);</script>
+</body>
+</html>
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -65,9 +88,27 @@ def get_oauth_repo(settings: Settings = Depends(get_settings)) -> SupabaseOAuthC
 # ---------------------------------------------------------------------------
 
 
+@router.get("/oauth-success")
+async def oauth_success() -> HTMLResponse:
+    """Serve a minimal HTML page that auto-closes the OAuth popup."""
+    return HTMLResponse(content=_OAUTH_SUCCESS_HTML)
+
+
+@router.get("/{provider}/status")
+async def auth_status(
+    provider: str,
+    user_id: str = Depends(get_optional_user),
+    oauth_repo: SupabaseOAuthConnectionRepository = Depends(get_oauth_repo),
+) -> dict[str, bool]:
+    """Check whether a user has a stored connection for a provider."""
+    connection = oauth_repo.get(user_id=user_id, provider=provider)
+    return {"connected": connection is not None}
+
+
 @router.get("/{provider}/start")
 async def auth_start(
     provider: str,
+    popup: Annotated[bool, Query()] = False,
     settings: Settings = Depends(get_settings),
 ) -> RedirectResponse:
     """Redirect the user to the OAuth provider's authorization page."""
@@ -77,15 +118,25 @@ async def auth_start(
     state = generate_state()
     authorization_url = build_authorization_url(provider, state=state, settings=settings)
 
+    is_secure = settings.app_base_url.startswith("https://")
     response = RedirectResponse(url=authorization_url, status_code=302)
     response.set_cookie(
         key=_STATE_COOKIE,
         value=state,
         httponly=True,
         samesite="lax",
-        secure=settings.app_base_url.startswith("https://"),
-        max_age=600,  # 10-minute window to complete the flow
+        secure=is_secure,
+        max_age=600,
     )
+    if popup:
+        response.set_cookie(
+            key=_POPUP_COOKIE,
+            value="true",
+            httponly=True,
+            samesite="lax",
+            secure=is_secure,
+            max_age=600,
+        )
     return response
 
 
@@ -96,6 +147,7 @@ async def auth_callback(
     code: Annotated[str | None, Query()] = None,
     state: Annotated[str | None, Query()] = None,
     error: Annotated[str | None, Query()] = None,
+    user_id: str = Depends(get_optional_user),
     settings: Settings = Depends(get_settings),
     kek: str = Depends(get_kek),
     oauth_repo: SupabaseOAuthConnectionRepository = Depends(get_oauth_repo),
@@ -124,11 +176,6 @@ async def auth_callback(
         logger.exception("Token exchange failed for provider %s", provider)
         raise HTTPException(status_code=400, detail="Token exchange failed") from exc
 
-    # Encrypt and persist
-    # user_id: for now, extracted from JWT in a follow-up (Sprint 2).
-    # Use a placeholder that will be replaced when Supabase Auth is wired up.
-    user_id = request.headers.get("x-user-id", "anonymous")
-
     oauth_repo.upsert(
         user_id=user_id,
         provider=provider,
@@ -138,8 +185,16 @@ async def auth_callback(
         scopes=tokens.scope.split(",") if tokens.scope else None,
     )
 
-    response = RedirectResponse(url=f"{settings.frontend_url}?connected={provider}", status_code=302)
+    is_popup = request.cookies.get(_POPUP_COOKIE) == "true"
+    if is_popup:
+        redirect_url = str(request.url_for("oauth_success"))
+    else:
+        redirect_url = f"{settings.frontend_url}?connected={provider}"
+
+    response = RedirectResponse(url=redirect_url, status_code=302)
     response.delete_cookie(key=_STATE_COOKIE)
+    if is_popup:
+        response.delete_cookie(key=_POPUP_COOKIE)
     return response
 
 
@@ -188,7 +243,7 @@ async def validate_medium_token(token: str) -> dict[str, Any]:
 @router.post("/medium/token")
 async def medium_token(
     body: MediumTokenRequest,
-    request: Request,
+    user_id: str = Depends(get_optional_user),
     kek: str = Depends(get_kek),
     oauth_repo: SupabaseOAuthConnectionRepository = Depends(get_oauth_repo),
 ) -> dict[str, str]:
@@ -197,8 +252,6 @@ async def medium_token(
         await validate_medium_token(body.token)
     except MediumTokenError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    user_id = request.headers.get("x-user-id", "anonymous")
 
     oauth_repo.upsert(
         user_id=user_id,
