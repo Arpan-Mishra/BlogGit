@@ -103,7 +103,7 @@ class TestSignup:
         assert resp.status_code == 400
 
     @patch("app.api.routes.user_auth.create_client")
-    def test_signup_no_session_returns_400(
+    def test_signup_no_session_returns_confirmation_pending(
         self, mock_create_client, client: TestClient
     ) -> None:
         result = MagicMock()
@@ -117,7 +117,10 @@ class TestSignup:
             "/user/signup",
             json={"email": "new@example.com", "password": "securepass123"},
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "confirmation_pending"
+        assert data["email"] == "new@example.com"
 
 
 # ---------------------------------------------------------------------------

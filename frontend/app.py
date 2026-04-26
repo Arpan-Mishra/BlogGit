@@ -134,12 +134,15 @@ def _render_auth_page() -> None:
                 )
                 if resp.ok:
                     data = resp.json()
-                    st.session_state["auth_token"] = data["access_token"]
-                    st.session_state["refresh_token"] = data["refresh_token"]
-                    st.session_state["user_id"] = data["user_id"]
-                    st.session_state["user_email"] = data["email"]
-                    _load_user_connections()
-                    st.rerun()
+                    if data.get("status") == "confirmation_pending":
+                        st.success(data["message"])
+                    else:
+                        st.session_state["auth_token"] = data["access_token"]
+                        st.session_state["refresh_token"] = data["refresh_token"]
+                        st.session_state["user_id"] = data["user_id"]
+                        st.session_state["user_email"] = data["email"]
+                        _load_user_connections()
+                        st.rerun()
                 else:
                     detail = resp.json().get("detail", "Signup failed")
                     st.error(detail)

@@ -48,6 +48,12 @@ class AuthResponse(BaseModel):
     email: str
 
 
+class SignupPendingResponse(BaseModel):
+    status: str
+    email: str
+    message: str
+
+
 class ConnectionStatus(BaseModel):
     provider: str
     connected: bool
@@ -77,13 +83,13 @@ def _get_oauth_repo(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/signup", response_model=AuthResponse)
+@router.post("/signup", response_model=AuthResponse | SignupPendingResponse)
 @limiter.limit("5/minute")
 async def signup(
     request: Request,
     body: SignupRequest,
     settings: Settings = Depends(get_settings),
-) -> AuthResponse:
+) -> AuthResponse | SignupPendingResponse:
     """Create a new user account via Supabase Auth."""
     client = create_client(
         settings.supabase_url,
@@ -91,15 +97,23 @@ async def signup(
     )
     try:
         result = client.auth.sign_up(
-            {"email": body.email, "password": body.password}
+            {
+                "email": body.email,
+                "password": body.password,
+                "options": {"email_redirect_to": settings.frontend_url},
+            }
         )
     except AuthApiError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    if not result.user or not result.session:
-        raise HTTPException(
-            status_code=400,
-            detail="Signup succeeded but no session returned. Check email confirmation settings.",
+    if not result.user:
+        raise HTTPException(status_code=400, detail="Signup failed")
+
+    if not result.session:
+        return SignupPendingResponse(
+            status="confirmation_pending",
+            email=body.email,
+            message="Check your email to confirm your account, then log in.",
         )
 
     return AuthResponse(
