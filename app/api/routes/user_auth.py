@@ -5,17 +5,19 @@ POST /user/signup  — create a new account
 POST /user/login   — sign in with email/password
 POST /user/logout  — sign out (invalidate session)
 GET  /user/connections — list OAuth connection status per provider
+POST /user/connections/{provider}/token — save a manual API token
 """
 
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from supabase_auth.errors import AuthApiError, AuthError
 from pydantic import BaseModel, EmailStr, Field
 from supabase import create_client
+from supabase_auth.errors import AuthApiError, AuthError
 
 from app.api.dependencies import get_current_user
 from app.api.limiter import limiter
+from app.auth.encryption import decrypt_token_or_none, encrypt_token
 from app.config import Settings, get_settings
 from app.db.repositories import SupabaseOAuthConnectionRepository
 
@@ -54,13 +56,27 @@ class SignupPendingResponse(BaseModel):
     message: str
 
 
+class SaveTokenRequest(BaseModel):
+    token: str = Field(..., min_length=1)
+    extra: str | None = None
+
+
 class ConnectionStatus(BaseModel):
     provider: str
     connected: bool
+    token: str | None = None
+    extra: str | None = None
 
 
 class ConnectionsResponse(BaseModel):
     connections: list[ConnectionStatus]
+
+
+class SaveTokenResponse(BaseModel):
+    status: str
+
+
+_MANUAL_TOKEN_PROVIDERS = {"github", "notion"}
 
 
 # ---------------------------------------------------------------------------
@@ -137,9 +153,7 @@ async def login(
         settings.supabase_anon_key.get_secret_value(),
     )
     try:
-        result = client.auth.sign_in_with_password(
-            {"email": body.email, "password": body.password}
-        )
+        result = client.auth.sign_in_with_password({"email": body.email, "password": body.password})
     except AuthApiError as exc:
         raise HTTPException(status_code=401, detail="Invalid credentials") from exc
 
@@ -176,16 +190,57 @@ async def logout(
 
 
 @router.get("/connections", response_model=ConnectionsResponse)
+@limiter.limit("20/minute")
 async def get_connections(
+    request: Request,
     user_id: str = Depends(get_current_user),
     oauth_repo: SupabaseOAuthConnectionRepository = Depends(_get_oauth_repo),
+    settings: Settings = Depends(get_settings),
 ) -> ConnectionsResponse:
-    """List OAuth connection status for all supported providers."""
-    statuses = [
-        ConnectionStatus(
-            provider=p,
-            connected=oauth_repo.get(user_id=user_id, provider=p) is not None,
+    """List OAuth connection status for all supported providers.
+
+    For manual-token providers (github, notion), the decrypted token
+    is returned so the frontend can restore it into session state.
+    """
+    kek = settings.blog_copilot_kek.get_secret_value()
+    statuses: list[ConnectionStatus] = []
+    for p in _PROVIDERS:
+        conn = oauth_repo.get(user_id=user_id, provider=p)
+        if conn is None:
+            statuses.append(ConnectionStatus(provider=p, connected=False))
+            continue
+        token_val: str | None = None
+        extra_val: str | None = None
+        if p in _MANUAL_TOKEN_PROVIDERS:
+            token_val = decrypt_token_or_none(conn.access_token_encrypted, kek)
+            extra_val = decrypt_token_or_none(conn.refresh_token_encrypted, kek)
+        statuses.append(
+            ConnectionStatus(provider=p, connected=True, token=token_val, extra=extra_val)
         )
-        for p in _PROVIDERS
-    ]
     return ConnectionsResponse(connections=statuses)
+
+
+@router.post("/connections/{provider}/token", response_model=SaveTokenResponse)
+@limiter.limit("10/minute")
+async def save_token(
+    request: Request,
+    provider: str,
+    body: SaveTokenRequest,
+    user_id: str = Depends(get_current_user),
+    oauth_repo: SupabaseOAuthConnectionRepository = Depends(_get_oauth_repo),
+    settings: Settings = Depends(get_settings),
+) -> SaveTokenResponse:
+    """Save a manually-entered API token (GitHub PAT, Notion integration token)."""
+    if provider not in _MANUAL_TOKEN_PROVIDERS:
+        raise HTTPException(status_code=400, detail="Manual tokens not supported for this provider")
+
+    kek = settings.blog_copilot_kek.get_secret_value()
+    oauth_repo.upsert(
+        user_id=user_id,
+        provider=provider,
+        access_token_encrypted=encrypt_token(body.token, kek),
+        refresh_token_encrypted=encrypt_token(body.extra, kek) if body.extra else None,
+        expires_at=None,
+        scopes=None,
+    )
+    return SaveTokenResponse(status="saved")

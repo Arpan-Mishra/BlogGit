@@ -8,11 +8,14 @@ In v1 the connection state is read from the FastAPI backend via a simple
 status endpoint. Buttons trigger the OAuth redirect flow.
 """
 
+import logging
 import re
 
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_notion_page_id(raw: str) -> str:
@@ -24,6 +27,52 @@ def _parse_notion_page_id(raw: str) -> str:
     if not match:
         raise ValueError(f"Cannot extract Notion page ID from: {raw!r}")
     return match.group(0)
+
+
+def _auth_headers() -> dict[str, str]:
+    """Return Authorization header dict if user is logged in, else empty."""
+    token = st.session_state.get("auth_token")
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    return {}
+
+
+def _save_token_to_backend(
+    api_base_url: str,
+    provider: str,
+    token: str,
+    extra: str | None = None,
+) -> None:
+    """POST a manual token to the backend for persistent storage."""
+    if not st.session_state.get("auth_token"):
+        logger.warning("Skipping token save for %s — no auth_token in session", provider)
+        return
+    try:
+        payload: dict[str, str] = {"token": token}
+        if extra:
+            payload["extra"] = extra
+        url = f"{api_base_url}/user/connections/{provider}/token"
+        logger.info("Saving %s token to %s", provider, url)
+        resp = requests.post(
+            url,
+            json=payload,
+            headers=_auth_headers(),
+            timeout=10,
+        )
+        if resp.ok:
+            logger.info("Successfully saved %s token", provider)
+        else:
+            logger.warning("Failed to save %s token: HTTP %s", provider, resp.status_code)
+            st.warning(
+                f"Could not save your {provider} token to the server. "
+                "It will not persist after logout."
+            )
+    except requests.RequestException as exc:
+        logger.warning("Failed to save %s token: %s", provider, exc)
+        st.warning(
+            f"Could not reach the server to save your {provider} token. "
+            "It will not persist after logout."
+        )
 
 
 def render_connections(api_base_url: str, github_token_key: str = "github_token") -> None:
@@ -39,20 +88,24 @@ def render_connections(api_base_url: str, github_token_key: str = "github_token"
     """
     st.sidebar.markdown("### Connections")
 
-    _render_github_connection(github_token_key)
-    _render_notion_connection()
+    _render_github_connection(api_base_url, github_token_key)
+    _render_notion_connection(api_base_url)
     _render_linkedin_connection(api_base_url)
 
     st.sidebar.divider()
 
 
-def _render_github_connection(token_key: str) -> None:
+def _render_github_connection(api_base_url: str, token_key: str) -> None:
     token = st.session_state.get(token_key, "")
     connected = bool(token)
 
-    with st.sidebar.expander("GitHub" + (" (connected)" if connected else ""), expanded=not connected):
-        st.markdown("Paste your [GitHub personal access token](https://github.com/settings/tokens) "
-                    "(needs `repo` scope).")
+    with st.sidebar.expander(
+        "GitHub" + (" (connected)" if connected else ""), expanded=not connected
+    ):
+        st.markdown(
+            "Paste your [GitHub personal access token](https://github.com/settings/tokens) "
+            "(needs `repo` scope)."
+        )
         new_token = st.text_input(
             "GitHub token",
             value=token,
@@ -62,10 +115,12 @@ def _render_github_connection(token_key: str) -> None:
         )
         if new_token != token:
             st.session_state[token_key] = new_token
+            if new_token:
+                _save_token_to_backend(api_base_url, "github", new_token)
             st.rerun()
 
 
-def _render_notion_connection() -> None:
+def _render_notion_connection(api_base_url: str) -> None:
     token = st.session_state.get("notion_token", "")
     page_id = st.session_state.get("notion_parent_page_id", "")
     connected = bool(token)
@@ -93,15 +148,32 @@ def _render_notion_connection() -> None:
         )
         if new_token != token:
             st.session_state["notion_token"] = new_token
+            if new_token:
+                _save_token_to_backend(
+                    api_base_url,
+                    "notion",
+                    new_token,
+                    extra=st.session_state.get("notion_parent_page_id", "") or None,
+                )
             st.rerun()
         if new_page_id_raw != page_id:
             if new_page_id_raw.strip():
                 try:
                     parsed_id = _parse_notion_page_id(new_page_id_raw)
                     st.session_state["notion_parent_page_id"] = parsed_id
+                    notion_tok = st.session_state.get("notion_token", "")
+                    if notion_tok:
+                        _save_token_to_backend(
+                            api_base_url,
+                            "notion",
+                            notion_tok,
+                            extra=parsed_id,
+                        )
                     st.rerun()
                 except ValueError:
-                    st.error("Could not extract a Notion page ID. Paste a Notion URL or 32-char ID.")
+                    st.error(
+                        "Could not extract a Notion page ID. Paste a Notion URL or 32-char ID."
+                    )
             else:
                 st.session_state["notion_parent_page_id"] = ""
                 st.rerun()
@@ -147,5 +219,3 @@ def _render_linkedin_connection(api_base_url: str) -> None:
                         st.info("Not connected yet. Complete the popup flow first.")
                 except requests.RequestException:
                     st.error("Could not reach the server to check status.")
-
-

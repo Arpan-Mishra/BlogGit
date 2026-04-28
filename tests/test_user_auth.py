@@ -8,12 +8,10 @@ import os
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from supabase_auth.errors import AuthApiError
 
 from tests.conftest import TEST_ENV
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -223,7 +221,7 @@ class TestConnections:
         mock_dep_client.return_value = mock_supabase_dep
 
         fake_repo_supabase = MagicMock()
-        fake_repo_supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.maybe_single.return_value.execute.return_value.data = None
+        fake_repo_supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = []
         mock_route_client.return_value = fake_repo_supabase
 
         resp = client.get(
@@ -251,15 +249,27 @@ class TestConnections:
 
         def _fake_get(user_id: str, provider: str):
             if provider == "github":
-                return MagicMock()
+                from app.auth.encryption import encrypt_token
+                from app.db.models import OAuthConnection
+
+                kek = TEST_ENV["BLOG_COPILOT_KEK"]
+                return OAuthConnection(
+                    id="conn-1",
+                    user_id=user_id,
+                    provider="github",
+                    access_token_encrypted=encrypt_token("ghp_test123", kek),
+                    refresh_token_encrypted=None,
+                    expires_at=None,
+                    scopes=None,
+                )
             return None
 
         fake_repo_supabase = MagicMock()
         mock_route_client.return_value = fake_repo_supabase
 
-        from app.api.routes.user_auth import _get_oauth_repo, get_connections
-        from app.db.repositories import SupabaseOAuthConnectionRepository
         from app.api.main import app
+        from app.api.routes.user_auth import _get_oauth_repo
+        from app.db.repositories import SupabaseOAuthConnectionRepository
 
         fake_repo = MagicMock(spec=SupabaseOAuthConnectionRepository)
         fake_repo.get.side_effect = _fake_get
@@ -283,6 +293,154 @@ class TestConnections:
         resp = client.get("/user/connections")
         assert resp.status_code == 401
 
+    @patch("app.api.dependencies.create_client")
+    def test_connections_returns_decrypted_token_for_github(
+        self, mock_dep_client, client: TestClient
+    ) -> None:
+        mock_user_resp = MagicMock()
+        mock_user_resp.user = _make_mock_user()
+        mock_supabase_dep = MagicMock()
+        mock_supabase_dep.auth.get_user.return_value = mock_user_resp
+        mock_dep_client.return_value = mock_supabase_dep
+
+        from app.api.main import app
+        from app.api.routes.user_auth import _get_oauth_repo
+        from app.auth.encryption import encrypt_token
+        from app.db.models import OAuthConnection
+        from app.db.repositories import SupabaseOAuthConnectionRepository
+
+        kek = TEST_ENV["BLOG_COPILOT_KEK"]
+
+        def _fake_get(user_id: str, provider: str):
+            if provider == "github":
+                return OAuthConnection(
+                    id="conn-1",
+                    user_id=user_id,
+                    provider="github",
+                    access_token_encrypted=encrypt_token("ghp_test_pat", kek),
+                    refresh_token_encrypted=None,
+                    expires_at=None,
+                    scopes=None,
+                )
+            return None
+
+        fake_repo = MagicMock(spec=SupabaseOAuthConnectionRepository)
+        fake_repo.get.side_effect = _fake_get
+        app.dependency_overrides[_get_oauth_repo] = lambda: fake_repo
+
+        resp = client.get(
+            "/user/connections",
+            headers={"Authorization": "Bearer valid-token"},
+        )
+        app.dependency_overrides.pop(_get_oauth_repo, None)
+
+        assert resp.status_code == 200
+        github_conn = next(
+            c for c in resp.json()["connections"] if c["provider"] == "github"
+        )
+        assert github_conn["connected"] is True
+        assert github_conn["token"] == "ghp_test_pat"
+        assert github_conn["extra"] is None
+
+
+# ---------------------------------------------------------------------------
+# Save token endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestSaveToken:
+    @patch("app.api.dependencies.create_client")
+    def test_save_github_token(self, mock_dep_client, client: TestClient) -> None:
+        mock_user_resp = MagicMock()
+        mock_user_resp.user = _make_mock_user()
+        mock_supabase_dep = MagicMock()
+        mock_supabase_dep.auth.get_user.return_value = mock_user_resp
+        mock_dep_client.return_value = mock_supabase_dep
+
+        from app.api.main import app
+        from app.api.routes.user_auth import _get_oauth_repo
+        from app.db.repositories import SupabaseOAuthConnectionRepository
+
+        fake_repo = MagicMock(spec=SupabaseOAuthConnectionRepository)
+        app.dependency_overrides[_get_oauth_repo] = lambda: fake_repo
+
+        resp = client.post(
+            "/user/connections/github/token",
+            json={"token": "ghp_abc123"},
+            headers={"Authorization": "Bearer valid-token"},
+        )
+        app.dependency_overrides.pop(_get_oauth_repo, None)
+
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "saved"}
+        fake_repo.upsert.assert_called_once()
+        call_kwargs = fake_repo.upsert.call_args.kwargs
+        assert call_kwargs["provider"] == "github"
+
+    @patch("app.api.dependencies.create_client")
+    def test_save_notion_token_with_extra(self, mock_dep_client, client: TestClient) -> None:
+        mock_user_resp = MagicMock()
+        mock_user_resp.user = _make_mock_user()
+        mock_supabase_dep = MagicMock()
+        mock_supabase_dep.auth.get_user.return_value = mock_user_resp
+        mock_dep_client.return_value = mock_supabase_dep
+
+        from app.api.main import app
+        from app.api.routes.user_auth import _get_oauth_repo
+        from app.db.repositories import SupabaseOAuthConnectionRepository
+
+        fake_repo = MagicMock(spec=SupabaseOAuthConnectionRepository)
+        app.dependency_overrides[_get_oauth_repo] = lambda: fake_repo
+
+        resp = client.post(
+            "/user/connections/notion/token",
+            json={"token": "secret_abc", "extra": "page-id-123"},
+            headers={"Authorization": "Bearer valid-token"},
+        )
+        app.dependency_overrides.pop(_get_oauth_repo, None)
+
+        assert resp.status_code == 200
+        call_kwargs = fake_repo.upsert.call_args.kwargs
+        assert call_kwargs["provider"] == "notion"
+        assert call_kwargs["refresh_token_encrypted"] is not None
+
+    def test_save_token_unsupported_provider(self, client: TestClient) -> None:
+        with patch("app.api.dependencies.create_client") as mock_dep_client:
+            mock_user_resp = MagicMock()
+            mock_user_resp.user = _make_mock_user()
+            mock_supabase = MagicMock()
+            mock_supabase.auth.get_user.return_value = mock_user_resp
+            mock_dep_client.return_value = mock_supabase
+
+            resp = client.post(
+                "/user/connections/linkedin/token",
+                json={"token": "some-token"},
+                headers={"Authorization": "Bearer valid-token"},
+            )
+            assert resp.status_code == 400
+
+    def test_save_token_without_auth_returns_401(self, client: TestClient) -> None:
+        resp = client.post(
+            "/user/connections/github/token",
+            json={"token": "ghp_abc123"},
+        )
+        assert resp.status_code == 401
+
+    def test_save_token_empty_token_returns_422(self, client: TestClient) -> None:
+        with patch("app.api.dependencies.create_client") as mock_dep_client:
+            mock_user_resp = MagicMock()
+            mock_user_resp.user = _make_mock_user()
+            mock_supabase = MagicMock()
+            mock_supabase.auth.get_user.return_value = mock_user_resp
+            mock_dep_client.return_value = mock_supabase
+
+            resp = client.post(
+                "/user/connections/github/token",
+                json={"token": ""},
+                headers={"Authorization": "Bearer valid-token"},
+            )
+            assert resp.status_code == 422
+
 
 # ---------------------------------------------------------------------------
 # JWT validation dependencies
@@ -293,6 +451,7 @@ class TestGetCurrentUser:
     @patch("app.api.dependencies.create_client")
     def test_valid_token_returns_user_id(self, mock_create_client) -> None:
         import asyncio
+
         from app.api.dependencies import get_current_user
         from app.config import Settings
 
@@ -318,7 +477,9 @@ class TestGetCurrentUser:
 
     def test_missing_token_raises_401(self) -> None:
         import asyncio
+
         from fastapi import HTTPException
+
         from app.api.dependencies import get_current_user
         from app.config import Settings
 
@@ -342,6 +503,7 @@ class TestGetOptionalUser:
     @patch("app.api.dependencies.create_client")
     def test_valid_token_returns_user_id(self, mock_create_client) -> None:
         import asyncio
+
         from app.api.dependencies import get_optional_user
         from app.config import Settings
 
@@ -367,6 +529,7 @@ class TestGetOptionalUser:
 
     def test_no_token_returns_anonymous(self) -> None:
         import asyncio
+
         from app.api.dependencies import get_optional_user
         from app.config import Settings
 
@@ -387,6 +550,7 @@ class TestGetOptionalUser:
     @patch("app.api.dependencies.create_client")
     def test_invalid_token_returns_anonymous(self, mock_create_client) -> None:
         import asyncio
+
         from app.api.dependencies import get_optional_user
         from app.config import Settings
 

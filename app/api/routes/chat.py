@@ -18,7 +18,7 @@ Streaming (Sprint 9):
 import json
 import logging
 import os
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from langchain_anthropic import ChatAnthropic
@@ -49,6 +49,15 @@ _NODE_STATUS: dict[str, str] = {
 }
 
 _STREAM_TOKEN_NODES: set[str] = {"intake", "drafting", "revision", "outline"}
+
+
+def _extract_text(content: str | list) -> str:
+    """Flatten an AIMessage content value to a plain string."""
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "") if isinstance(block, dict) else str(block) for block in content
+        )
+    return content or ""
 
 
 # ---------------------------------------------------------------------------
@@ -155,12 +164,16 @@ def _make_repo_llm(settings: Settings):
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
-            logger.warning("repo_llm returned non-JSON; using fallback RepoSummary. raw=%r", raw[:200])
+            logger.warning(
+                "repo_llm returned non-JSON; using fallback RepoSummary. raw=%r", raw[:200]
+            )
             data = {}
         return RepoSummary(
             language=data.get("language", "unknown"),
             modules=tuple(data.get("modules", [])),
-            purpose=data.get("purpose", "Repository purpose could not be determined from available data."),
+            purpose=data.get(
+                "purpose", "Repository purpose could not be determined from available data."
+            ),
             notable_commits=tuple(data.get("notable_commits", [])),
             readme_excerpt=data.get("readme_excerpt", ""),
         )
@@ -229,18 +242,20 @@ async def chat(
                     for tc in tool_calls:
                         yield {
                             "event": "tool_start",
-                            "data": json.dumps({
-                                "tool_name": tc.get("name", ""),
-                                "node": node_name,
-                            }),
+                            "data": json.dumps(
+                                {
+                                    "tool_name": tc.get("name", ""),
+                                    "node": node_name,
+                                }
+                            ),
                         }
 
-                    content = getattr(msg, "content", "")
+                    content = _extract_text(getattr(msg, "content", ""))
                     if content and not tool_calls and node_name in _STREAM_TOKEN_NODES:
                         yield {"event": "token", "data": content}
 
                 elif chunk_type == "updates":
-                    for node_name, node_output in chunk["data"].items():
+                    for _node_name, node_output in chunk["data"].items():
                         if isinstance(node_output, dict):
                             accumulated.update(node_output)
         except Exception as exc:
@@ -253,7 +268,9 @@ async def chat(
         new_messages = accumulated.get("messages", [])[prev_message_count:]
         for msg in new_messages:
             if isinstance(msg, AIMessage):
-                yield {"event": "message", "data": msg.content}
+                text = _extract_text(msg.content)
+                if text:
+                    yield {"event": "message", "data": text}
 
         phase = accumulated.get("phase", "")
         yield {"event": "done", "data": phase}

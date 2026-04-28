@@ -16,15 +16,14 @@ Usage:
 import json
 import logging
 import re
+import sys
 import uuid
-from typing import Generator
+from collections.abc import Generator
+from pathlib import Path
 
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
-
-import sys
-from pathlib import Path
 
 # Ensure the project root is on sys.path so both `streamlit run frontend/app.py`
 # (cwd = project root) and direct script execution work correctly.
@@ -32,7 +31,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from frontend.components.connections import render_connections
+from frontend.components.connections import render_connections  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +39,10 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-import os
+import os  # noqa: E402
+
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
+_OAUTH_CALLBACK_PROVIDERS = frozenset({"github", "notion", "linkedin", "medium"})
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +59,7 @@ def _auth_headers() -> dict[str, str]:
 
 
 def _load_user_connections() -> None:
-    """Fetch connection statuses from backend and update session state."""
+    """Fetch connection statuses from backend and restore tokens into session state."""
     try:
         resp = requests.get(
             f"{API_BASE_URL}/user/connections",
@@ -67,8 +68,17 @@ def _load_user_connections() -> None:
         )
         if resp.ok:
             for conn in resp.json().get("connections", []):
+                provider = conn["provider"]
                 if conn["connected"]:
-                    st.session_state[f"{conn['provider']}_connected"] = True
+                    st.session_state[f"{provider}_connected"] = True
+                token_val = conn.get("token")
+                extra_val = conn.get("extra")
+                if provider == "github" and token_val:
+                    st.session_state["github_token"] = token_val
+                elif provider == "notion" and token_val:
+                    st.session_state["notion_token"] = token_val
+                    if extra_val:
+                        st.session_state["notion_parent_page_id"] = extra_val
     except requests.exceptions.RequestException as exc:
         logger.warning("Failed to load user connections: %s", exc)
 
@@ -148,6 +158,7 @@ def _render_auth_page() -> None:
                     st.error(detail)
             except requests.exceptions.ConnectionError:
                 st.error("Cannot connect to the backend.")
+
 
 # ---------------------------------------------------------------------------
 # SSE helper
@@ -371,9 +382,7 @@ def _handle_user_input(user_input: str) -> None:
 
     if full_response:
         placeholder.markdown(full_response)
-        st.session_state["chat_history"].append(
-            {"role": "assistant", "content": full_response}
-        )
+        st.session_state["chat_history"].append({"role": "assistant", "content": full_response})
         # If this looks like a full draft (longer content in revise phase) cache it.
         if phase_after == "revise" and len(full_response) > 200:
             st.session_state["current_draft"] = full_response
@@ -651,7 +660,7 @@ def main() -> None:
 
     # Detect OAuth callback redirects (e.g. ?connected=linkedin after OAuth flow)
     _connected_provider = st.query_params.get("connected")
-    if _connected_provider:
+    if _connected_provider and _connected_provider in _OAUTH_CALLBACK_PROVIDERS:
         st.session_state[f"{_connected_provider}_connected"] = True
         st.query_params.clear()
         st.toast(f"{_connected_provider.capitalize()} connected!", icon="✅")
@@ -662,7 +671,9 @@ def main() -> None:
     st.caption("Tell me about your project and I'll help write a blog post.")
 
     if not st.session_state["repo_url_submitted"]:
-        st.info("Enter a GitHub repository URL in the sidebar and click **Start session** to begin.")
+        st.info(
+            "Enter a GitHub repository URL in the sidebar and click **Start session** to begin."
+        )
         return
 
     _render_chat_history()
