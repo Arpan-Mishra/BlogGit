@@ -71,6 +71,19 @@ class GetRepoMetadataInput(BaseModel):
     repo: str = Field(description="Repository name")
 
 
+class GetFileContentsInput(BaseModel):
+    owner: str = Field(description="Repository owner (user or org)")
+    repo: str = Field(description="Repository name")
+    path: str = Field(description="File path within the repository (e.g. 'src/auth/jwt.py')")
+
+
+class SearchCodeInput(BaseModel):
+    owner: str = Field(description="Repository owner (user or org)")
+    repo: str = Field(description="Repository name")
+    query: str = Field(description="Short phrase to search in code (e.g. 'def authenticate')")
+    max_results: int = Field(default=5, description="Maximum number of results to return")
+
+
 # ---------------------------------------------------------------------------
 # Tool implementation functions
 # ---------------------------------------------------------------------------
@@ -145,6 +158,68 @@ def get_repo_metadata(owner: str, repo: str, *, token: str) -> str:
     )
 
 
+class GitHubToolError(Exception):
+    """Raised when a GitHub API call fails with an unexpected status."""
+
+
+def get_file_contents(owner: str, repo: str, path: str, *, token: str, max_chars: int = 20_000) -> str:
+    """Fetch and decode a single file from the repository.
+
+    Returns the file text, truncated to *max_chars*. Returns a descriptive
+    error string (does not raise) when the file is not found.
+    """
+    try:
+        data = _get(f"/repos/{owner}/{repo}/contents/{path}", token)
+        if isinstance(data, list):
+            return f"[{path} is a directory]"
+        encoded = data.get("content", "")
+        text = base64.b64decode(encoded.replace("\n", "")).decode("utf-8", errors="replace")
+        if len(text) > max_chars:
+            text = text[:max_chars] + f"\n... [truncated at {max_chars} chars]"
+        return text
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return f"[File not found: {path}]"
+        raise GitHubToolError(f"get_file_contents failed for {path}") from exc
+
+
+def search_code(owner: str, repo: str, query: str, *, token: str, max_results: int = 5) -> str:
+    """Search code in the repository using the GitHub code search API.
+
+    Returns a formatted string with file paths and code snippets. Returns
+    a graceful error string on rate-limit (429) or invalid query (422) —
+    never raises in those cases.
+    """
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github.text-match+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    q = f"{query} repo:{owner}/{repo}"
+    try:
+        with httpx.Client(timeout=_DEFAULT_TIMEOUT) as client:
+            resp = client.get(
+                f"{_GITHUB_API_BASE}/search/code",
+                headers=headers,
+                params={"q": q, "per_page": min(max_results, 10)},
+            )
+            if resp.status_code == 429:
+                return f"[Rate limited — skipping: {query}]"
+            if resp.status_code == 422:
+                return f"[Invalid search query: {query}]"
+            resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise GitHubToolError("search_code failed") from exc
+
+    items = resp.json().get("items", [])[:max_results]
+    lines: list[str] = []
+    for item in items:
+        path = item.get("path", "")
+        snippets = [m.get("fragment", "").strip() for m in item.get("text_matches", [])[:2]]
+        lines.append("FILE: " + path + "\n  " + "\n  ".join(s for s in snippets if s))
+    return "\n\n".join(lines) if lines else f"[No results for: {query}]"
+
+
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
@@ -193,5 +268,27 @@ def build_github_tools(github_token: str) -> list[StructuredTool]:
                 "(language, description, topics, stars)."
             ),
             args_schema=GetRepoMetadataInput,
+        ),
+        StructuredTool.from_function(
+            func=lambda owner, repo, path: get_file_contents(
+                owner, repo, path, token=github_token
+            ),
+            name="get_file_contents",
+            description=(
+                "Fetch and decode the contents of a single file in a GitHub repository. "
+                "Returns the file text or an error string if not found."
+            ),
+            args_schema=GetFileContentsInput,
+        ),
+        StructuredTool.from_function(
+            func=lambda owner, repo, query, max_results=5: search_code(
+                owner, repo, query, token=github_token, max_results=max_results
+            ),
+            name="search_code",
+            description=(
+                "Search for code patterns within a GitHub repository. "
+                "Returns matching file paths with code snippets."
+            ),
+            args_schema=SearchCodeInput,
         ),
     ]

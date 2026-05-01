@@ -109,7 +109,8 @@ def _build_graph_for_request(request: ChatRequest, settings: Settings):
     github_token = request.github_token or os.environ.get("GITHUB_TOKEN", "")
     tools = build_github_tools(github_token=github_token)
 
-    repo_llm = _make_repo_llm(settings)
+    exploration_llm = _make_exploration_llm(settings)
+    synthesis_llm = _make_synthesis_llm(settings)
     drafting_llm = ChatAnthropic(
         model=settings.anthropic_model,
         api_key=settings.anthropic_api_key.get_secret_value(),
@@ -124,61 +125,29 @@ def _build_graph_for_request(request: ChatRequest, settings: Settings):
 
     return build_graph(
         tools=tools,
-        repo_llm=repo_llm,
+        exploration_llm=exploration_llm,
+        synthesis_llm=synthesis_llm,
         drafting_llm=drafting_llm,
         search_tool=search_tool,
     )
 
 
-def _make_repo_llm(settings: Settings):
-    """Build the structured-output LLM used by the repo_analyzer node."""
-    import json
-
-    from langchain_core.messages import HumanMessage as LCHumanMessage
-    from langchain_core.runnables import RunnableLambda
-
-    from app.agent.state import RepoSummary
-
-    chat = ChatAnthropic(
+def _make_exploration_llm(settings: Settings) -> ChatAnthropic:
+    """Lightweight LLM for Phase 2 file/query selection (fast, cheap)."""
+    return ChatAnthropic(
         model=settings.anthropic_model,
         api_key=settings.anthropic_api_key.get_secret_value(),
-        max_tokens=1024,
+        max_tokens=512,
     )
 
-    async def _invoke(prompt: str) -> RepoSummary:
-        system = (
-            "You are an expert software analyst. "
-            "Respond ONLY with a JSON object with these keys: "
-            "language (str), modules (list of str), purpose (str), "
-            "notable_commits (list of str), readme_excerpt (str). "
-            "Do not wrap the JSON in markdown code fences. "
-            "Do not include any other text."
-        )
-        messages = [LCHumanMessage(content=f"{system}\n\n{prompt}")]
-        response = await chat.ainvoke(messages)
-        raw = response.content.strip()
-        # Strip markdown code fences if the model wraps the JSON anyway
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1]  # drop opening fence line
-            raw = raw.rsplit("```", 1)[0].strip()
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            logger.warning(
-                "repo_llm returned non-JSON; using fallback RepoSummary. raw=%r", raw[:200]
-            )
-            data = {}
-        return RepoSummary(
-            language=data.get("language", "unknown"),
-            modules=tuple(data.get("modules", [])),
-            purpose=data.get(
-                "purpose", "Repository purpose could not be determined from available data."
-            ),
-            notable_commits=tuple(data.get("notable_commits", [])),
-            readme_excerpt=data.get("readme_excerpt", ""),
-        )
 
-    return RunnableLambda(_invoke)
+def _make_synthesis_llm(settings: Settings) -> ChatAnthropic:
+    """Higher-quality LLM for Phase 3 RepoSummary synthesis."""
+    return ChatAnthropic(
+        model=settings.anthropic_model,
+        api_key=settings.anthropic_api_key.get_secret_value(),
+        max_tokens=2048,
+    )
 
 
 # ---------------------------------------------------------------------------

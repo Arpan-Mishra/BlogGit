@@ -15,6 +15,7 @@ class RepoSummary:
     """Structured summary produced by the repo_analyzer node.
 
     All collection fields are tuples (immutable) rather than lists.
+    Fields with defaults must follow fields without defaults.
     """
 
     language: str
@@ -22,6 +23,12 @@ class RepoSummary:
     purpose: str
     notable_commits: tuple[str, ...]
     readme_excerpt: str
+    # Sprint 10: enriched fields (all defaulted so existing construction is unaffected)
+    key_files: tuple[str, ...] = field(default_factory=tuple)
+    code_insights: tuple[str, ...] = field(default_factory=tuple)
+    tech_stack: tuple[str, ...] = field(default_factory=tuple)
+    architecture_notes: str = field(default="")
+    user_intent: str = field(default="")
 
 
 @dataclass(frozen=True)

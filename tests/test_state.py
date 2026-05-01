@@ -66,6 +66,44 @@ class TestRepoSummary:
         s = self._make()
         assert isinstance(s.notable_commits, tuple)
 
+    def test_new_fields_default_to_empty(self) -> None:
+        """Construction without new fields should succeed with empty defaults."""
+        from app.agent.state import RepoSummary
+
+        s = RepoSummary(
+            language="Go",
+            modules=(),
+            purpose="A Go tool.",
+            notable_commits=(),
+            readme_excerpt="",
+        )
+        assert s.key_files == ()
+        assert s.code_insights == ()
+        assert s.tech_stack == ()
+        assert s.architecture_notes == ""
+        assert s.user_intent == ""
+
+    def test_new_fields_can_be_set(self) -> None:
+        from app.agent.state import RepoSummary
+
+        s = RepoSummary(
+            language="Rust",
+            modules=("src",),
+            purpose="A Rust server.",
+            notable_commits=("abc init",),
+            readme_excerpt="Rust server.",
+            key_files=("src/main.rs", "src/auth.rs"),
+            code_insights=("Uses tokio async runtime.",),
+            tech_stack=("Rust", "tokio", "axum"),
+            architecture_notes="Layered async architecture.",
+            user_intent="Write about Rust async patterns.",
+        )
+        assert "src/main.rs" in s.key_files
+        assert "Uses tokio async runtime." in s.code_insights
+        assert "axum" in s.tech_stack
+        assert "Layered" in s.architecture_notes
+        assert "Rust async" in s.user_intent
+
 
 # ---------------------------------------------------------------------------
 # DraftVersion

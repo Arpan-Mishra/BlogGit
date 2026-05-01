@@ -81,83 +81,57 @@ class TestMakeInitialState:
 
 
 # ---------------------------------------------------------------------------
-# _make_repo_llm — the inner _invoke coroutine
+# _make_exploration_llm and _make_synthesis_llm
 # ---------------------------------------------------------------------------
 
 
-class TestMakeRepoLlm:
+class TestMakeLlmFactories:
     def _make_settings(self) -> MagicMock:
         settings = MagicMock()
         settings.anthropic_model = "claude-test"
         settings.anthropic_api_key.get_secret_value.return_value = "sk-test"
         return settings
 
-    @pytest.mark.asyncio
-    async def test_returns_repo_summary_from_valid_json(self) -> None:
-        from app.api.routes.chat import _make_repo_llm
-        from app.agent.state import RepoSummary
+    def test_exploration_llm_returns_chat_anthropic(self) -> None:
+        from app.api.routes.chat import _make_exploration_llm
 
-        payload = {
-            "language": "Python",
-            "modules": ["app", "tests"],
-            "purpose": "A test tool.",
-            "notable_commits": ["abc fix: something"],
-            "readme_excerpt": "Hello world",
-        }
+        mock_instance = MagicMock()
+        with patch("app.api.routes.chat.ChatAnthropic", return_value=mock_instance) as MockCls:
+            result = _make_exploration_llm(self._make_settings())
+            MockCls.assert_called_once()
+            call_kwargs = MockCls.call_args[1]
+            assert call_kwargs["max_tokens"] == 512
+        assert result is mock_instance
 
-        mock_chat = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = json.dumps(payload)
-        mock_chat.ainvoke = AsyncMock(return_value=mock_response)
+    def test_synthesis_llm_returns_chat_anthropic(self) -> None:
+        from app.api.routes.chat import _make_synthesis_llm
 
-        with patch("app.api.routes.chat.ChatAnthropic", return_value=mock_chat):
-            llm = _make_repo_llm(self._make_settings())
-            result = await llm.ainvoke("some prompt")
+        mock_instance = MagicMock()
+        with patch("app.api.routes.chat.ChatAnthropic", return_value=mock_instance) as MockCls:
+            result = _make_synthesis_llm(self._make_settings())
+            MockCls.assert_called_once()
+            call_kwargs = MockCls.call_args[1]
+            assert call_kwargs["max_tokens"] == 2048
+        assert result is mock_instance
 
-        assert isinstance(result, RepoSummary)
-        assert result.language == "Python"
-        assert result.modules == ("app", "tests")
-        assert result.purpose == "A test tool."
+    def test_exploration_llm_uses_settings_model(self) -> None:
+        from app.api.routes.chat import _make_exploration_llm
 
-    @pytest.mark.asyncio
-    async def test_falls_back_gracefully_on_non_json_response(self) -> None:
-        from app.api.routes.chat import _make_repo_llm
-        from app.agent.state import RepoSummary
+        settings = self._make_settings()
+        settings.anthropic_model = "claude-opus-4-6"
 
-        mock_chat = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = "I cannot answer that."
-        mock_chat.ainvoke = AsyncMock(return_value=mock_response)
+        with patch("app.api.routes.chat.ChatAnthropic") as MockCls:
+            _make_exploration_llm(settings)
+            call_kwargs = MockCls.call_args[1]
+            assert call_kwargs["model"] == "claude-opus-4-6"
 
-        with patch("app.api.routes.chat.ChatAnthropic", return_value=mock_chat):
-            llm = _make_repo_llm(self._make_settings())
-            result = await llm.ainvoke("some prompt")
+    def test_synthesis_llm_uses_settings_model(self) -> None:
+        from app.api.routes.chat import _make_synthesis_llm
 
-        assert isinstance(result, RepoSummary)
-        assert result.language == "unknown"
+        settings = self._make_settings()
+        settings.anthropic_model = "claude-sonnet-4-6"
 
-    @pytest.mark.asyncio
-    async def test_strips_markdown_fences_before_parsing(self) -> None:
-        from app.api.routes.chat import _make_repo_llm
-        from app.agent.state import RepoSummary
-
-        payload = {
-            "language": "Go",
-            "modules": [],
-            "purpose": "A Go service.",
-            "notable_commits": [],
-            "readme_excerpt": "",
-        }
-        fenced = f"```json\n{json.dumps(payload)}\n```"
-
-        mock_chat = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = fenced
-        mock_chat.ainvoke = AsyncMock(return_value=mock_response)
-
-        with patch("app.api.routes.chat.ChatAnthropic", return_value=mock_chat):
-            llm = _make_repo_llm(self._make_settings())
-            result = await llm.ainvoke("prompt")
-
-        assert isinstance(result, RepoSummary)
-        assert result.language == "Go"
+        with patch("app.api.routes.chat.ChatAnthropic") as MockCls:
+            _make_synthesis_llm(settings)
+            call_kwargs = MockCls.call_args[1]
+            assert call_kwargs["model"] == "claude-sonnet-4-6"

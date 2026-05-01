@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from app.agent._repo_analysis import phase1_fetch, phase2_explore, phase3_synthesize
 from app.agent.state import BlogState, DraftVersion, RepoSummary
 
 _PROMPTS_DIR = Path(__file__).parent.parent.parent / "prompts"
@@ -125,29 +126,32 @@ def _extract_citation_url(text: str) -> str | None:
 
 def make_repo_analyzer_node(
     tools: list[Any],
-    llm: Any,
+    exploration_llm: Any,
+    synthesis_llm: Any,
 ) -> Callable[[BlogState], Awaitable[dict[str, Any]]]:
     """Return an async LangGraph node function for repo analysis.
+
+    Runs a three-phase deterministic pipeline:
+      1. Parallel baseline fetch (README, file tree, commits, metadata)
+      2. Intent-driven exploration (LLM selects files/queries → execute)
+      3. Rich synthesis (LLM produces full RepoSummary from all data)
 
     Parameters
     ----------
     tools:
         List of StructuredTool (or any object with .name and .ainvoke).
         Expected tools: get_readme, get_file_tree, get_recent_commits,
-        get_repo_metadata.
-    llm:
-        An LLM instance with an async .ainvoke method. In production this
-        is a Claude model; in tests it is a mock that returns a RepoSummary.
+        get_repo_metadata, get_file_contents, search_code.
+    exploration_llm:
+        Lightweight LLM used in Phase 2 to select files and search queries.
+    synthesis_llm:
+        Higher-quality LLM used in Phase 3 to produce the rich RepoSummary.
 
     Returns
     -------
     An async function ``node(state: BlogState) -> dict`` suitable for use as
     a LangGraph StateGraph node.
     """
-    readme_tool = _extract_tool(tools, "get_readme")
-    tree_tool = _extract_tool(tools, "get_file_tree")
-    commits_tool = _extract_tool(tools, "get_recent_commits")
-    metadata_tool = _extract_tool(tools, "get_repo_metadata")
 
     async def repo_analyzer_node(state: BlogState) -> dict:
         repo_url = state.get("repo_url")
@@ -155,50 +159,17 @@ def make_repo_analyzer_node(
             raise ValueError("repo_url is required in state to run repo_analyzer")
 
         owner, repo = parse_github_url(repo_url)
-        logger.info("Analyzing repo: %s/%s", owner, repo)
+        logger.info("Analyzing repo_url=%s", repo_url)
 
-        # Gather raw data from GitHub tools (best-effort — skip on error)
-        readme = ""
-        file_tree = ""
-        commits_log = ""
-        repo_metadata = ""
+        user_intent = _extract_user_intent(state)
 
-        if readme_tool:
-            try:
-                readme = await readme_tool.ainvoke({"owner": owner, "repo": repo})
-            except Exception as exc:
-                logger.warning("get_readme failed: %s", exc)
-
-        if tree_tool:
-            try:
-                file_tree = await tree_tool.ainvoke({"owner": owner, "repo": repo})
-            except Exception as exc:
-                logger.warning("get_file_tree failed: %s", exc)
-
-        if commits_tool:
-            try:
-                commits_log = await commits_tool.ainvoke({"owner": owner, "repo": repo})
-            except Exception as exc:
-                logger.warning("get_recent_commits failed: %s", exc)
-
-        if metadata_tool:
-            try:
-                repo_metadata = await metadata_tool.ainvoke({"owner": owner, "repo": repo})
-            except Exception as exc:
-                logger.warning("get_repo_metadata failed: %s", exc)
-
-        # Delegate structured extraction to the LLM
-        prompt = _build_analysis_prompt(
-            owner=owner,
-            repo=repo,
-            readme=readme,
-            file_tree=file_tree,
-            commits_log=commits_log,
-            repo_metadata=repo_metadata,
+        baseline = await phase1_fetch(owner, repo, tools)
+        exploration = await phase2_explore(
+            owner, repo, tools, baseline, user_intent, exploration_llm
         )
-        summary: RepoSummary = await llm.ainvoke(prompt)
-
-        logger.info("RepoSummary produced: language=%s purpose=%r", summary.language, summary.purpose[:60])
+        summary = await phase3_synthesize(
+            owner, repo, baseline, exploration, user_intent, synthesis_llm
+        )
 
         return {
             "repo_summary": summary,
@@ -208,42 +179,19 @@ def make_repo_analyzer_node(
     return repo_analyzer_node
 
 
-def _build_analysis_prompt(
-    *,
-    owner: str,
-    repo: str,
-    readme: str,
-    file_tree: str,
-    commits_log: str,
-    repo_metadata: str,
-) -> str:
-    """Construct the prompt sent to the LLM for structured repo analysis."""
-    readme_excerpt = readme if readme else "(no README found)"
-    tree_excerpt = file_tree[:3000] if file_tree else "(no file tree available)"
-    commits_excerpt = commits_log[:2000] if commits_log else "(no commits available)"
-
-    return f"""You are analyzing the GitHub repository {owner}/{repo} to produce a structured summary for a blog post.
-
-## Repository Metadata
-{repo_metadata or "(not available)"}
-
-## README
-{readme_excerpt}
-
-## File Tree (first 3000 chars)
-{tree_excerpt}
-
-## Recent Commits
-{commits_excerpt}
-
-Based on this information, produce a RepoSummary with:
-- language: the primary programming language
-- modules: the top-level modules or packages (as a tuple of strings)
-- purpose: a concise 1-2 sentence description of what the project does
-- notable_commits: the most interesting commits from the log (as a tuple of strings)
-- readme_excerpt: the first 500 chars of the README
-
-Return ONLY a RepoSummary frozen dataclass object. Do not include any explanation."""
+def _extract_user_intent(state: BlogState) -> str:
+    """Extract the first human message as the user's stated intent."""
+    messages = state.get("messages") or []
+    for msg in messages:
+        if isinstance(msg, HumanMessage):
+            content = msg.content
+            if isinstance(content, list):
+                return "".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in content
+                )
+            return str(content)
+    return ""
 
 
 # ---------------------------------------------------------------------------

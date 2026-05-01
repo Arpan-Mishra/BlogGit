@@ -75,7 +75,8 @@ def route_after_outline(state: BlogState) -> str:
 
 def build_graph(
     tools: list[Any],
-    repo_llm: Any,
+    exploration_llm: Any,
+    synthesis_llm: Any,
     drafting_llm: Any,
     search_tool: Any = None,
     image_tool: Any = None,
@@ -87,8 +88,10 @@ def build_graph(
     ----------
     tools:
         GitHub MCP tools passed to make_repo_analyzer_node.
-    repo_llm:
-        LLM used by the repo_analyzer node for structured extraction.
+    exploration_llm:
+        Lightweight LLM used in Phase 2 to select files and search queries.
+    synthesis_llm:
+        Higher-quality LLM used in Phase 3 to produce the rich RepoSummary.
     drafting_llm:
         LLM used by the outline, drafting, and revision nodes.
     search_tool:
@@ -108,7 +111,14 @@ def build_graph(
     """
     graph: StateGraph = StateGraph(BlogState)
 
-    graph.add_node("repo_analyzer", make_repo_analyzer_node(tools=tools, llm=repo_llm))
+    graph.add_node(
+        "repo_analyzer",
+        make_repo_analyzer_node(
+            tools=tools,
+            exploration_llm=exploration_llm,
+            synthesis_llm=synthesis_llm,
+        ),
+    )
     graph.add_node("intake", make_intake_node())
     graph.add_node("outline", make_outline_node(llm=drafting_llm))
     graph.add_node(

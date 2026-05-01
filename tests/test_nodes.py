@@ -80,13 +80,15 @@ class TestMakeRepoAnalyzerNode:
 
     def _make_mock_tools(self) -> list:
         """Return stub tool objects that the node can call."""
+        import json
+
         readme_tool = MagicMock()
         readme_tool.name = "get_readme"
         readme_tool.ainvoke = AsyncMock(return_value="# Hello World\nA sample repo.")
 
         tree_tool = MagicMock()
         tree_tool.name = "get_file_tree"
-        tree_tool.ainvoke = AsyncMock(return_value="src/\n  main.py\ntests/\n  test_main.py")
+        tree_tool.ainvoke = AsyncMock(return_value="src/main.py\ntests/test_main.py")
 
         commits_tool = MagicMock()
         commits_tool.name = "get_recent_commits"
@@ -94,21 +96,53 @@ class TestMakeRepoAnalyzerNode:
             return_value="abc1234 feat: initial commit\ndef5678 fix: correct typo"
         )
 
-        return [readme_tool, tree_tool, commits_tool]
+        metadata_tool = MagicMock()
+        metadata_tool.name = "get_repo_metadata"
+        metadata_tool.ainvoke = AsyncMock(return_value="Language: Python\nStars: 5")
 
-    def _make_mock_llm(self) -> MagicMock:
-        from app.agent.state import RepoSummary
+        file_contents_tool = MagicMock()
+        file_contents_tool.name = "get_file_contents"
+        file_contents_tool.ainvoke = AsyncMock(return_value="def main(): pass")
 
-        summary = RepoSummary(
-            language="Python",
-            modules=("src",),
-            purpose="A sample CLI tool.",
-            notable_commits=("abc1234 feat: initial commit",),
-            readme_excerpt="A sample repo.",
-        )
+        search_code_tool = MagicMock()
+        search_code_tool.name = "search_code"
+        search_code_tool.ainvoke = AsyncMock(return_value="FILE: src/main.py\n  def main(): pass")
 
+        return [readme_tool, tree_tool, commits_tool, metadata_tool, file_contents_tool, search_code_tool]
+
+    def _make_mock_exploration_llm(self) -> MagicMock:
+        import json
+
+        plan = {
+            "files_to_fetch": ["src/main.py"],
+            "search_queries": ["def main"],
+            "reasoning": "Main entry point is most relevant.",
+        }
+        response = MagicMock()
+        response.content = json.dumps(plan)
         llm = MagicMock()
-        llm.ainvoke = AsyncMock(return_value=summary)
+        llm.ainvoke = AsyncMock(return_value=response)
+        return llm
+
+    def _make_mock_synthesis_llm(self) -> MagicMock:
+        import json
+
+        summary_data = {
+            "language": "Python",
+            "modules": ["src"],
+            "purpose": "A sample CLI tool.",
+            "notable_commits": ["abc1234 feat: initial commit"],
+            "readme_excerpt": "A sample repo.",
+            "key_files": ["src/main.py"],
+            "code_insights": ["Uses argparse for CLI."],
+            "tech_stack": ["Python", "argparse"],
+            "architecture_notes": "Single module CLI.",
+            "user_intent": "Write about the CLI tool.",
+        }
+        response = MagicMock()
+        response.content = json.dumps(summary_data)
+        llm = MagicMock()
+        llm.ainvoke = AsyncMock(return_value=response)
         return llm
 
     @pytest.mark.asyncio
@@ -117,8 +151,11 @@ class TestMakeRepoAnalyzerNode:
         from app.agent.state import RepoSummary
 
         tools = self._make_mock_tools()
-        llm = self._make_mock_llm()
-        node = make_repo_analyzer_node(tools=tools, llm=llm)
+        node = make_repo_analyzer_node(
+            tools=tools,
+            exploration_llm=self._make_mock_exploration_llm(),
+            synthesis_llm=self._make_mock_synthesis_llm(),
+        )
         state = self._make_state()
 
         result = await node(state)
@@ -131,8 +168,11 @@ class TestMakeRepoAnalyzerNode:
         from app.agent.nodes import make_repo_analyzer_node
 
         tools = self._make_mock_tools()
-        llm = self._make_mock_llm()
-        node = make_repo_analyzer_node(tools=tools, llm=llm)
+        node = make_repo_analyzer_node(
+            tools=tools,
+            exploration_llm=self._make_mock_exploration_llm(),
+            synthesis_llm=self._make_mock_synthesis_llm(),
+        )
         state = self._make_state()
 
         result = await node(state)
@@ -144,8 +184,11 @@ class TestMakeRepoAnalyzerNode:
         from app.agent.nodes import make_repo_analyzer_node
 
         tools = self._make_mock_tools()
-        llm = self._make_mock_llm()
-        node = make_repo_analyzer_node(tools=tools, llm=llm)
+        node = make_repo_analyzer_node(
+            tools=tools,
+            exploration_llm=self._make_mock_exploration_llm(),
+            synthesis_llm=self._make_mock_synthesis_llm(),
+        )
         state = self._make_state(repo_url="")
         state["repo_url"] = None
 
@@ -158,8 +201,11 @@ class TestMakeRepoAnalyzerNode:
         from app.agent.state import RepoSummary
 
         tools = self._make_mock_tools()
-        llm = self._make_mock_llm()
-        node = make_repo_analyzer_node(tools=tools, llm=llm)
+        node = make_repo_analyzer_node(
+            tools=tools,
+            exploration_llm=self._make_mock_exploration_llm(),
+            synthesis_llm=self._make_mock_synthesis_llm(),
+        )
         state = self._make_state()
 
         result = await node(state)
@@ -169,6 +215,8 @@ class TestMakeRepoAnalyzerNode:
         assert summary.purpose
         assert isinstance(summary.modules, tuple)
         assert isinstance(summary.notable_commits, tuple)
+        assert isinstance(summary.key_files, tuple)
+        assert isinstance(summary.tech_stack, tuple)
 
 
 # ---------------------------------------------------------------------------

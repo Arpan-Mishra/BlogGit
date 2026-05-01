@@ -227,3 +227,153 @@ class TestGetRepoMetadata:
             result = get_repo_metadata("owner", "repo", token="ghp_test")
 
         assert "unknown" in result
+
+
+# ---------------------------------------------------------------------------
+# get_file_contents
+# ---------------------------------------------------------------------------
+
+
+class TestGetFileContents:
+    def test_returns_decoded_file_content(self) -> None:
+        import base64
+
+        from app.tools.github_mcp import get_file_contents
+
+        content = "def main():\n    print('hello')\n"
+        encoded = base64.b64encode(content.encode()).decode()
+        ctx, _ = _mock_client(json_data={"content": encoded})
+
+        with patch("httpx.Client", return_value=ctx):
+            result = get_file_contents("owner", "repo", "src/main.py", token="ghp_test")
+
+        assert result == content
+
+    def test_returns_not_found_string_on_404(self) -> None:
+        from app.tools.github_mcp import get_file_contents
+
+        ctx, _ = _mock_client(status_code=404, json_data={})
+
+        with patch("httpx.Client", return_value=ctx):
+            result = get_file_contents("owner", "repo", "missing.py", token="ghp_test")
+
+        assert "[File not found: missing.py]" in result
+
+    def test_returns_directory_string_for_list_response(self) -> None:
+        from app.tools.github_mcp import get_file_contents
+
+        ctx, _ = _mock_client(json_data=[{"name": "file.py", "type": "file"}])
+
+        with patch("httpx.Client", return_value=ctx):
+            result = get_file_contents("owner", "repo", "src/", token="ghp_test")
+
+        assert "is a directory" in result
+
+    def test_truncates_large_files(self) -> None:
+        import base64
+
+        from app.tools.github_mcp import get_file_contents
+
+        content = "x" * 30_000
+        encoded = base64.b64encode(content.encode()).decode()
+        ctx, _ = _mock_client(json_data={"content": encoded})
+
+        with patch("httpx.Client", return_value=ctx):
+            result = get_file_contents(
+                "owner", "repo", "big.py", token="ghp_test", max_chars=100
+            )
+
+        assert len(result) < 200
+        assert "truncated" in result
+
+    def test_raises_github_tool_error_on_non_404_error(self) -> None:
+        from app.tools.github_mcp import GitHubToolError, get_file_contents
+
+        ctx, _ = _mock_client(status_code=500, json_data={})
+
+        with patch("httpx.Client", return_value=ctx):
+            with pytest.raises(GitHubToolError):
+                get_file_contents("owner", "repo", "src/main.py", token="ghp_test")
+
+
+# ---------------------------------------------------------------------------
+# search_code
+# ---------------------------------------------------------------------------
+
+
+class TestSearchCode:
+    def test_returns_formatted_results(self) -> None:
+        from app.tools.github_mcp import search_code
+
+        items = [
+            {
+                "path": "src/auth.py",
+                "text_matches": [{"fragment": "def authenticate(user):"}],
+            }
+        ]
+        ctx, _ = _mock_client(json_data={"items": items})
+
+        with patch("httpx.Client", return_value=ctx):
+            result = search_code(
+                "owner", "repo", "def authenticate", token="ghp_test"
+            )
+
+        assert "src/auth.py" in result
+        assert "def authenticate" in result
+
+    def test_returns_no_results_string_when_empty(self) -> None:
+        from app.tools.github_mcp import search_code
+
+        ctx, _ = _mock_client(json_data={"items": []})
+
+        with patch("httpx.Client", return_value=ctx):
+            result = search_code("owner", "repo", "nonexistent", token="ghp_test")
+
+        assert "[No results for: nonexistent]" in result
+
+    def test_returns_graceful_string_on_rate_limit(self) -> None:
+        from app.tools.github_mcp import search_code
+
+        ctx, _ = _mock_client(status_code=429, json_data={})
+
+        with patch("httpx.Client", return_value=ctx):
+            result = search_code("owner", "repo", "some query", token="ghp_test")
+
+        assert "[Rate limited" in result
+        assert "some query" in result
+
+    def test_returns_graceful_string_on_invalid_query(self) -> None:
+        from app.tools.github_mcp import search_code
+
+        ctx, _ = _mock_client(status_code=422, json_data={})
+
+        with patch("httpx.Client", return_value=ctx):
+            result = search_code("owner", "repo", "bad:query", token="ghp_test")
+
+        assert "[Invalid search query" in result
+
+    def test_respects_max_results(self) -> None:
+        from app.tools.github_mcp import search_code
+
+        items = [
+            {"path": f"file{i}.py", "text_matches": [{"fragment": f"snippet {i}"}]}
+            for i in range(10)
+        ]
+        ctx, _ = _mock_client(json_data={"items": items})
+
+        with patch("httpx.Client", return_value=ctx):
+            result = search_code(
+                "owner", "repo", "snippet", token="ghp_test", max_results=3
+            )
+
+        # Only 3 FILE: entries should appear
+        assert result.count("FILE:") == 3
+
+    def test_raises_github_tool_error_on_server_error(self) -> None:
+        from app.tools.github_mcp import GitHubToolError, search_code
+
+        ctx, _ = _mock_client(status_code=500, json_data={})
+
+        with patch("httpx.Client", return_value=ctx):
+            with pytest.raises(GitHubToolError):
+                search_code("owner", "repo", "query", token="ghp_test")
