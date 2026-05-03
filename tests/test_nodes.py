@@ -300,7 +300,7 @@ class TestMakeIntakeNode:
     async def test_asks_first_question_when_no_history(self) -> None:
         from langchain_core.messages import AIMessage
 
-        from app.agent.nodes import INTAKE_QUESTIONS, make_intake_node
+        from app.agent.nodes import _INTAKE_FORM_INTRO, make_intake_node
 
         node = make_intake_node()
         state = _make_intake_state()
@@ -310,8 +310,47 @@ class TestMakeIntakeNode:
         messages = result["messages"]
         ai_messages = [m for m in messages if isinstance(m, AIMessage)]
         assert len(ai_messages) == 1
-        _, q_text = INTAKE_QUESTIONS[0]
-        assert q_text in ai_messages[0].content
+        assert _INTAKE_FORM_INTRO in ai_messages[0].content
+
+    @pytest.mark.asyncio
+    async def test_batch_form_submission_stores_all_answers(self) -> None:
+        from langchain_core.messages import HumanMessage
+
+        from app.agent.intake_questions import format_batch_answers
+        from app.agent.nodes import make_intake_node
+
+        node = make_intake_node()
+        answers = {
+            "audience": "senior engineers",
+            "tone": "technical deep-dive",
+            "emphasis": "architecture decisions",
+            "avoid": "nothing specific",
+            "extra_instructions": "Focus on async pipeline",
+        }
+        batch_msg = format_batch_answers(answers)
+        state = _make_intake_state(messages=[HumanMessage(content=batch_msg)])
+
+        result = await node(state)
+
+        assert result["phase"] == "outline"
+        assert result["intake_answers"]["audience"] == "senior engineers"
+        assert result["intake_answers"]["tone"] == "technical deep-dive"
+        assert result["intake_answers"]["extra_instructions"] == "Focus on async pipeline"
+
+    @pytest.mark.asyncio
+    async def test_batch_form_submission_transitions_to_outline(self) -> None:
+        from langchain_core.messages import HumanMessage
+
+        from app.agent.intake_questions import format_batch_answers
+        from app.agent.nodes import make_intake_node
+
+        node = make_intake_node()
+        batch_msg = format_batch_answers({"audience": "general tech readers"})
+        state = _make_intake_state(messages=[HumanMessage(content=batch_msg)])
+
+        result = await node(state)
+
+        assert result["phase"] == "outline"
 
     @pytest.mark.asyncio
     async def test_stores_answer_and_asks_next_question(self) -> None:

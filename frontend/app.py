@@ -32,6 +32,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from frontend.components.connections import render_connections  # noqa: E402
+from frontend.components.intake_form import render_intake_form  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -260,6 +261,8 @@ def _init_session() -> None:
         st.session_state["linkedin_post"] = None
     if "outreach_dm" not in st.session_state:
         st.session_state["outreach_dm"] = None
+    if "intake_form_done" not in st.session_state:
+        st.session_state["intake_form_done"] = False
 
 
 def _handle_logout() -> None:
@@ -680,11 +683,21 @@ def main() -> None:
     _render_draft_panel()
     _render_publish_panel()
 
-    # Chat input — shown for all phases except "done"
+    # Intake phase — show the structured form instead of a plain chat input
+    if st.session_state["phase"] == "intake" and not st.session_state.get(
+        "intake_form_done"
+    ):
+        batch_string = render_intake_form()
+        if batch_string:
+            st.session_state["intake_form_done"] = True
+            _handle_user_input(batch_string)
+            st.rerun()
+        return
+
+    # Chat input — shown for all phases except "done" and "intake" (handled above)
     if st.session_state["phase"] != "done":
         placeholder_text = {
             "repo": "Say anything to start the analysis...",
-            "intake": "Answer the question above...",
             "outline": "Approve the outline or suggest changes...",
             "draft": "Say anything to start drafting...",
             "revise": "Give feedback on the draft (e.g. 'make the intro shorter')...",

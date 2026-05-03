@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent._repo_analysis import phase1_fetch, phase2_explore, phase3_synthesize
+from app.agent.intake_questions import BATCH_FORMAT_HEADER, parse_batch_answers
 from app.agent.state import BlogState, DraftVersion, RepoSummary
 
 _PROMPTS_DIR = Path(__file__).parent.parent.parent / "prompts"
@@ -206,6 +207,12 @@ INTAKE_QUESTIONS: list[tuple[str, str]] = [
     ("extra_instructions", "Any other context or instructions for writing the post?"),
 ]
 
+_INTAKE_FORM_INTRO = (
+    "I've finished analyzing the repository. "
+    "Please fill in the form below to guide your blog post — "
+    "choose from the predefined options or add your own instructions."
+)
+
 
 # ---------------------------------------------------------------------------
 # intake node factory
@@ -230,9 +237,32 @@ def make_intake_node() -> Callable[[BlogState], Awaitable[dict[str, Any]]]:
         intake_answers: dict[str, str] = dict(state.get("intake_answers", {}))
         user_citations: tuple[str, ...] = state.get("user_citations", ())
 
-        # Check if the latest human message is a citation request — intercept
-        # before normal intake processing so the question is re-asked afterward.
         human_messages = [m for m in messages if isinstance(m, HumanMessage)]
+
+        # ------------------------------------------------------------------
+        # Fast path: batch form submission from the structured intake UI.
+        # Detected by the magic header written by the frontend form component.
+        # ------------------------------------------------------------------
+        if human_messages:
+            latest_human = human_messages[-1].content
+            if isinstance(latest_human, str) and latest_human.startswith(BATCH_FORMAT_HEADER):
+                parsed = parse_batch_answers(latest_human)
+                intake_answers.update(parsed)
+                logger.info(
+                    "Intake: batch form received, %d answers parsed; transitioning to outline",
+                    len(parsed),
+                )
+                return {
+                    "intake_answers": intake_answers,
+                    "user_citations": user_citations,
+                    "messages": messages,
+                    "phase": "outline",
+                }
+
+        # ------------------------------------------------------------------
+        # Citation intercept — a URL pasted as an answer is treated as a
+        # reference rather than an intake answer; re-surface the current Q.
+        # ------------------------------------------------------------------
         if human_messages:
             latest_human = human_messages[-1].content
             citation_url = _extract_citation_url(latest_human)
@@ -251,7 +281,7 @@ def make_intake_node() -> Callable[[BlogState], Awaitable[dict[str, Any]]]:
                 current_q_text = (
                     INTAKE_QUESTIONS[last_asked_index][1]
                     if last_asked_index >= 0
-                    else INTAKE_QUESTIONS[0][1]
+                    else _INTAKE_FORM_INTRO
                 )
                 confirm_msg = (
                     f"Got it — I'll include {citation_url} in the References section.\n\n"
@@ -263,6 +293,12 @@ def make_intake_node() -> Callable[[BlogState], Awaitable[dict[str, Any]]]:
                     "phase": "intake",
                 }
 
+        # ------------------------------------------------------------------
+        # Sequential fallback path (used when no form UI is present).
+        # First call: send the form-ready intro instead of Q0 directly.
+        # Subsequent calls: detect last asked question, store answer, ask next.
+        # ------------------------------------------------------------------
+
         # Detect the index of the last question asked (if any).
         last_asked_index: int = -1
         for i, (_, q_text) in enumerate(INTAKE_QUESTIONS):
@@ -271,7 +307,21 @@ def make_intake_node() -> Callable[[BlogState], Awaitable[dict[str, Any]]]:
                     last_asked_index = i
                     break
 
-        # If a question was asked, store the last HumanMessage as its answer.
+        intro_sent = any(
+            isinstance(m, AIMessage) and _INTAKE_FORM_INTRO in m.content for m in messages
+        )
+
+        # First call — no intake question has been asked yet and intro not sent.
+        if last_asked_index == -1 and not intro_sent:
+            logger.info("Intake: sending form intro message")
+            return {
+                "intake_answers": intake_answers,
+                "user_citations": user_citations,
+                "messages": messages + [AIMessage(content=_INTAKE_FORM_INTRO)],
+                "phase": "intake",
+            }
+
+        # If a question was asked (sequential path), store the last human answer.
         if last_asked_index >= 0:
             key, _ = INTAKE_QUESTIONS[last_asked_index]
             if human_messages:
@@ -281,7 +331,6 @@ def make_intake_node() -> Callable[[BlogState], Awaitable[dict[str, Any]]]:
         next_index = last_asked_index + 1
 
         if next_index >= len(INTAKE_QUESTIONS):
-            # All questions answered — transition to outline planning
             logger.info("All intake questions answered; transitioning to outline phase")
             return {
                 "intake_answers": intake_answers,
