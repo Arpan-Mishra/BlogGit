@@ -26,4 +26,5 @@ services:
     depends_on:
       - api
     volumes:
+      - ./app:/app/app
       - ./frontend:/app/frontend
