@@ -132,6 +132,35 @@ def _build_graph_for_request(request: ChatRequest, settings: Settings):
     )
 
 
+def _upsert_draft_to_db(
+    *,
+    session_id: str,
+    user_id: str,
+    repo_url: str,
+    current_draft: str,
+    settings: Settings,
+) -> None:
+    """Best-effort DB write — logs on failure but never raises."""
+    try:
+        from supabase import create_client
+
+        from app.db.repositories import SupabaseDraftRepository
+
+        client = create_client(
+            settings.supabase_url,
+            settings.supabase_service_role_key.get_secret_value(),
+        )
+        repo = SupabaseDraftRepository(client)
+        repo.upsert(
+            session_id=session_id,
+            user_id=user_id,
+            repo_url=repo_url,
+            current_draft=current_draft,
+        )
+    except Exception:
+        logger.exception("Failed to persist draft for session %s", session_id)
+
+
 def _make_exploration_llm(settings: Settings) -> ChatAnthropic:
     """Lightweight LLM for Phase 2 file/query selection (fast, cheap)."""
     return ChatAnthropic(
@@ -233,6 +262,15 @@ async def chat(
             return
 
         _sessions[body.session_id] = accumulated
+
+        if accumulated.get("current_draft") and body.user_id != "anonymous":
+            _upsert_draft_to_db(
+                session_id=body.session_id,
+                user_id=body.user_id,
+                repo_url=accumulated.get("repo_url") or "",
+                current_draft=accumulated["current_draft"],
+                settings=settings,
+            )
 
         new_messages = accumulated.get("messages", [])[prev_message_count:]
         for msg in new_messages:

@@ -91,6 +91,34 @@ def _require_draft(state: BlogState, session_id: str) -> str:
     return draft
 
 
+def _upsert_publish_fields(
+    *, session_id: str, settings: Settings, **fields: str | None
+) -> None:
+    """Best-effort DB update of publish fields — logs on failure, never raises."""
+    try:
+        from supabase import create_client
+
+        from app.db.repositories import SupabaseDraftRepository
+
+        state = _sessions.get(session_id)
+        if state is None:
+            return
+        client = create_client(
+            settings.supabase_url,
+            settings.supabase_service_role_key.get_secret_value(),
+        )
+        repo = SupabaseDraftRepository(client)
+        repo.upsert(
+            session_id=session_id,
+            user_id=state.get("user_id", ""),
+            repo_url=state.get("repo_url") or "",
+            current_draft=state.get("current_draft") or "",
+            **fields,
+        )
+    except Exception:
+        logger.exception("Failed to persist publish fields for session %s", session_id)
+
+
 def _make_drafting_llm(settings: Settings) -> ChatAnthropic:
     return ChatAnthropic(
         model=settings.anthropic_model,
@@ -141,6 +169,13 @@ async def publish_to_notion(
     title = update.get("notion_title", "")
     page_url = f"https://notion.so/{page_id.replace('-', '')}" if page_id else ""
 
+    _upsert_publish_fields(
+        session_id=body.session_id,
+        settings=settings,
+        notion_page_id=page_id or None,
+        notion_title=title or None,
+    )
+
     return NotionPublishResponse(
         notion_page_id=page_id,
         notion_title=title,
@@ -182,6 +217,13 @@ async def adapt_for_medium(
     _sessions[body.session_id] = {**state, **update}
 
     medium_markdown = update.get("medium_markdown", "")
+
+    _upsert_publish_fields(
+        session_id=body.session_id,
+        settings=settings,
+        medium_markdown=medium_markdown or None,
+    )
+
     return MediumAdaptResponse(medium_markdown=medium_markdown)
 
 
@@ -218,7 +260,17 @@ async def generate_linkedin_content(
 
     _sessions[body.session_id] = {**state, **update}
 
+    linkedin_post = update.get("linkedin_post", "")
+    outreach_dm = update.get("outreach_dm", "")
+
+    _upsert_publish_fields(
+        session_id=body.session_id,
+        settings=settings,
+        linkedin_post=linkedin_post or None,
+        outreach_dm=outreach_dm or None,
+    )
+
     return LinkedInGenerateResponse(
-        linkedin_post=update.get("linkedin_post", ""),
-        outreach_dm=update.get("outreach_dm", ""),
+        linkedin_post=linkedin_post,
+        outreach_dm=outreach_dm,
     )

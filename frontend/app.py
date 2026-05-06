@@ -263,6 +263,10 @@ def _init_session() -> None:
         st.session_state["outreach_dm"] = None
     if "intake_form_done" not in st.session_state:
         st.session_state["intake_form_done"] = False
+    if "viewing_draft_id" not in st.session_state:
+        st.session_state["viewing_draft_id"] = None
+    if "past_drafts_list" not in st.session_state:
+        st.session_state["past_drafts_list"] = None  # None = not yet loaded
 
 
 def _handle_logout() -> None:
@@ -330,6 +334,36 @@ def _render_sidebar() -> None:
         "done": "Complete",
     }
     st.sidebar.markdown(f"**Status:** {phase_labels.get(phase, phase)}")
+
+    # ------------------------------------------------------------------
+    # Previous Drafts section — only shown when authenticated
+    # ------------------------------------------------------------------
+    if st.session_state.get("auth_token"):
+        st.sidebar.markdown("---")
+        col_prev, col_refresh = st.sidebar.columns([3, 1])
+        with col_prev:
+            st.sidebar.markdown("**Previous Drafts**")
+        with col_refresh:
+            if st.sidebar.button("Refresh", key="btn_refresh_drafts"):
+                st.session_state["past_drafts_list"] = None
+
+        if st.session_state["past_drafts_list"] is None:
+            st.session_state["past_drafts_list"] = _load_past_drafts()
+
+        past_drafts = st.session_state["past_drafts_list"]
+        if not past_drafts:
+            st.sidebar.caption("No saved drafts yet.")
+        else:
+            for d in past_drafts:
+                label = (d.get("title") or d.get("repo_url", "Untitled"))[:40]
+                if st.sidebar.button(label, key=f"draft_{d['session_id']}"):
+                    st.session_state["viewing_draft_id"] = d["session_id"]
+                    st.rerun()
+
+        if st.session_state["viewing_draft_id"]:
+            if st.sidebar.button("Back to chat", key="btn_back_to_chat"):
+                st.session_state["viewing_draft_id"] = None
+                st.rerun()
 
 
 def _render_chat_history() -> None:
@@ -644,6 +678,53 @@ def _render_publish_panel() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Past-draft helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_past_drafts() -> list[dict]:
+    """Fetch the authenticated user's past drafts from the backend."""
+    try:
+        resp = requests.get(
+            f"{API_BASE_URL}/drafts",
+            headers=_auth_headers(),
+            timeout=10,
+        )
+        if resp.ok:
+            return resp.json()
+        logger.warning("Failed to load past drafts: HTTP %s", resp.status_code)
+    except requests.exceptions.RequestException as exc:
+        logger.warning("Failed to load past drafts: %s", exc)
+    return []
+
+
+def _render_past_draft_viewer() -> None:
+    """Fetch a past draft by session_id and render the read-only viewer."""
+    from frontend.components.draft_viewer import render_draft_viewer
+
+    session_id = st.session_state["viewing_draft_id"]
+    try:
+        resp = requests.get(
+            f"{API_BASE_URL}/drafts/{session_id}",
+            headers=_auth_headers(),
+            timeout=10,
+        )
+        if not resp.ok:
+            st.error(f"Could not load draft (HTTP {resp.status_code}).")
+            return
+        draft = resp.json()
+    except requests.exceptions.RequestException as exc:
+        st.error(f"Could not load draft: {exc}")
+        return
+
+    render_draft_viewer(
+        draft=draft,
+        api_base_url=API_BASE_URL,
+        auth_headers=_auth_headers(),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -669,6 +750,11 @@ def main() -> None:
         st.toast(f"{_connected_provider.capitalize()} connected!", icon="✅")
 
     _render_sidebar()
+
+    # Past-draft view — shown instead of the chat when a draft is selected
+    if st.session_state.get("viewing_draft_id"):
+        _render_past_draft_viewer()
+        return
 
     st.title("BlogGit")
     st.caption("Tell me about your project and I'll help write a blog post.")
